@@ -1,0 +1,30 @@
+Enhance the provided original photograph to **ultra-high-resolution 8K quality** while strictly preserving 100% of its original identity, authenticity, and composition.
+
+**STRICT PRESERVATION RULES:**
+- Do NOT change, regenerate, modify, beautify, or reconstruct the person's face.
+- Preserve exact facial features, identity, skin texture, expressions, and proportions.
+- Do NOT change the original posture, body position, clothing, hairstyle, or accessories.
+- Do NOT change, replace, extend, remove, or modify the background, surroundings, or location.
+- Maintain the exact original camera angle, perspective, framing, and composition.
+- Do NOT add or remove any objects or details.
+
+**QUALITY ENHANCEMENT:**
+- Upscale the original image to genuine 8K resolution (7680px on the longer edge, preserving aspect ratio).
+- Recover and enhance fine details with natural-looking pixel clarity.
+- Remove compression artifacts, pixelation, noise, and unwanted blur.
+- Improve sharpness and edge definition without creating artificial textures.
+- Preserve realistic skin pores, hair strands, fabric textures, and environmental details.
+- Ensure maximum clarity when zooming into the photograph.
+
+**PROFESSIONAL COLOR GRADING & LIGHTING:**
+- Apply natural, professional-grade cinematic color grading.
+- Correct white balance, contrast, highlights, shadows, and saturation.
+- Adjust lighting according to the original surroundings and environmental light sources.
+- Maintain realistic skin tones and natural environmental colors.
+- Improve dynamic range without overexposure or crushed shadows.
+- Create balanced, realistic illumination that matches the original scene.
+
+**FINAL OUTPUT:**
+Produce a photorealistic, professionally enhanced 8K photograph that looks like the exact same original photograph captured with a high-end professional camera.
+
+**MOST IMPORTANT:** This is an image enhancement task, NOT an image-generation task. Originality must remain untouched. Identity, face, posture, clothing, background, surroundings, and composition must remain pixel-faithful to the source. Only improve technical image quality, clarity, lighting, and color grading.
