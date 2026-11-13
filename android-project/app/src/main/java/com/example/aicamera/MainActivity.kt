@@ -331,8 +331,8 @@ object Api {
             val modified = item.optLong("modified", 0L)
             val local = localFiles.firstOrNull { it.name == name }
             if (local == null || modified > local.lastModified() + 1000L) {
-                val url = "$base/api/gallery/\${Uri.encode(name)}"
-                val temp = File(context.cacheDir, "cloud_\${UUID.randomUUID()}_\${File(name).name}")
+                val url = "$base/api/gallery/${Uri.encode(name)}"
+                val temp = File(context.cacheDir, "cloud_${UUID.randomUUID()}_${File(name).name}")
                 try {
                     http.newCall(Request.Builder().url(url).header("Authorization", "Bearer $sid").get().build()).execute().use { r ->
                         check(r)
