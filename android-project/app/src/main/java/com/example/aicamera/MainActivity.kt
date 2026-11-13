@@ -178,7 +178,7 @@ object Api {
     var deviceId: String
         get() = readSecret("device_id")
         set(v) = writeSecret("device_id", v)
-    var installationId: String
+    val installationId: String
         get() {
             val existing = readSecret("installation_id")
             if (existing.isNotBlank()) return existing
