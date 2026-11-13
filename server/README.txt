@@ -12,4 +12,4 @@ set ENGINE=chatgpt
 python -m uvicorn server:app --host 0.0.0.0 --port 8000
 Keep the browser window open. Works only on your own computer, not on cloud hosts.
 
-Android v1.7 queue support: the /enhance endpoint accepts an optional request_id form field. Repeated requests with the same request_id and signed-in user reuse an existing processing/completed job while it remains available. Older v1.6 Android clients may omit request_id and continue to work.
+Android v1.8: sign in on the website, select Phone app, then enter the one-time 4-digit code in the Android app. The code expires after 5 minutes and can be redeemed once. The app stores a revocable device token using Android Keystore-backed encrypted preferences; website login remains unchanged. A wrong-code rate limit is applied per client IP. Existing sessions and Android v1.7 clients remain compatible.\n\nAndroid v1.7 queue support: the /enhance endpoint accepts an optional request_id form field. Repeated requests with the same request_id and signed-in user reuse an existing processing/completed job while it remains available. Older v1.6 Android clients may omit request_id and continue to work.
