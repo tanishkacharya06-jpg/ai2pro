@@ -189,6 +189,9 @@ object Api {
     var user: String
         get() = rd("user")
         set(v) = wr("user", v)
+    var accountCode: String
+        get() = readSecret("account_code")
+        set(v) = writeSecret("account_code", v)
     var pid: Int
         get() = prefs.getInt("pid", 0)
         set(v) { prefs.edit().putInt("pid", v).apply() }
@@ -250,7 +253,100 @@ object Api {
         }
     }
 
-    /** Creates or restores an anonymous device profile; no website login or pairing is needed. */
+
+    suspend fun createOrRestoreProfile(): String = withContext(Dispatchers.IO) {
+        resolve()
+        val body = JSONObject().put("installation_id", installationId).put("device_name", "AI Camera Android")
+            .toString().toRequestBody("application/json".toMediaType())
+        http.newCall(Request.Builder().url("$base/api/device/profile").post(body).build()).execute().use { r ->
+            if (!r.isSuccessful) throw ApiHttpException(r.code, detail(r))
+            val json = JSONObject(r.body!!.string())
+            sid = json.getString("device_token")
+            deviceId = json.optString("device_id")
+            user = json.getString("name")
+            val code = json.optString("code")
+            if (code.length == 4) accountCode = code
+            user
+        }
+    }
+
+    suspend fun loginWithCode(code: String): String = withContext(Dispatchers.IO) {
+        val clean = code.trim()
+        if (clean.length != 4 || !clean.all { it.isDigit() }) throw IOException("Enter all 4 digits.")
+        resolve()
+        val body = JSONObject().put("code", clean).put("installation_id", installationId)
+            .put("device_name", "AI Camera Android").toString().toRequestBody("application/json".toMediaType())
+        http.newCall(Request.Builder().url("$base/api/device/login-code").post(body).build()).execute().use { r ->
+            if (!r.isSuccessful) throw ApiHttpException(r.code, detail(r))
+            val json = JSONObject(r.body!!.string())
+            sid = json.getString("device_token")
+            deviceId = json.optString("device_id")
+            user = json.getString("name")
+            accountCode = clean
+            user
+        }
+    }
+
+    suspend fun regenerateAccountCode(): String = withContext(Dispatchers.IO) {
+        http.newCall(rq("/api/device/code/regenerate").post("{}".toRequestBody("application/json".toMediaType())).build()).execute().use { r ->
+            check(r)
+            accountCode = JSONObject(r.body!!.string()).getString("code")
+            accountCode
+        }
+    }
+
+    private fun uploadLocalPhoto(file: File) {
+        if (!file.isFile || sid.isBlank()) return
+        val mime = when (file.extension.lowercase()) { "png" -> "image/png"; "webp" -> "image/webp"; else -> "image/jpeg" }
+        val body = MultipartBody.Builder().setType(MultipartBody.FORM)
+            .addFormDataPart("name", file.name)
+            .addFormDataPart("modified", file.lastModified().toString())
+            .addFormDataPart("photo", file.name, file.asRequestBody(mime.toMediaType())).build()
+        http.newCall(rq("/api/gallery/upload").post(body).build()).execute().use { check(it) }
+    }
+
+    suspend fun syncGallery(context: Context): Int = withContext(Dispatchers.IO) {
+        if (sid.isBlank() || user.isBlank()) return@withContext 0
+        val index = http.newCall(rq("/api/gallery").get().build()).execute().use { r ->
+            check(r)
+            JSONArray(r.body!!.string())
+        }
+        val remote = mutableMapOf<String, Long>()
+        for (i in 0 until index.length()) {
+            val item = index.getJSONObject(i)
+            remote[item.getString("name")] = item.optLong("modified", 0L)
+        }
+        val localFiles = GalleryStorage.list(context)
+        var changed = 0
+        for (file in localFiles) {
+            val cloudModified = remote[file.name]
+            if (cloudModified == null || file.lastModified() > cloudModified + 1000L) {
+                uploadLocalPhoto(file)
+                changed++
+            }
+        }
+        for (i in 0 until index.length()) {
+            val item = index.getJSONObject(i)
+            val name = item.getString("name")
+            val modified = item.optLong("modified", 0L)
+            val local = localFiles.firstOrNull { it.name == name }
+            if (local == null || modified > local.lastModified() + 1000L) {
+                val url = "$base/api/gallery/\${Uri.encode(name)}"
+                val temp = File(context.cacheDir, "cloud_\${UUID.randomUUID()}_\${File(name).name}")
+                try {
+                    http.newCall(Request.Builder().url(url).header("Authorization", "Bearer $sid").get().build()).execute().use { r ->
+                        check(r)
+                        temp.outputStream().use { out -> r.body!!.byteStream().copyTo(out) }
+                    }
+                    GalleryStorage.importRemote(context, temp, name, modified)
+                    changed++
+                } finally { temp.delete() }
+            }
+        }
+        changed
+    }
+
+    /** Legacy guest method retained for older builds. */
     suspend fun connectGuest(): String = withContext(Dispatchers.IO) {
         if (base.isBlank()) resolve()
         if (sid.isNotBlank()) {
@@ -311,6 +407,7 @@ object Api {
         sid = ""
         deviceId = ""
         user = ""
+        accountCode = ""
     }
 
     suspend fun prompts(): List<Pair<Int, String>> = withContext(Dispatchers.IO) {
@@ -806,6 +903,11 @@ fun MainScreen() {
     var checkingServer by remember { mutableStateOf(false) }
     var timerSeconds by remember { mutableIntStateOf(Api.prefs.getInt("camera_timer", 0)) }
     var gridMode by remember { mutableIntStateOf(Api.prefs.getInt("camera_grid", 0)) }
+    var accountName by remember { mutableStateOf(Api.user) }
+    var accountCode by remember { mutableStateOf(Api.accountCode) }
+    var accountBusy by remember { mutableStateOf(false) }
+    var accountError by remember { mutableStateOf("") }
+    var accountSwitchReady by remember { mutableStateOf(false) }
 
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
         if (uri != null) {
@@ -840,8 +942,17 @@ fun MainScreen() {
             serverStatus = status.second
             if (status.first) {
                 try {
-                    Api.connectGuest()
+                    if (Api.sid.isNotBlank()) {
+                        try { Api.validate() }
+                        catch (_: Exception) { Api.sid = ""; Api.deviceId = ""; Api.user = "" }
+                    }
+                    if (Api.sid.isBlank() || (Api.accountCode.isBlank() && Api.user.startsWith("guest_"))) {
+                        Api.createOrRestoreProfile()
+                    }
+                    accountName = Api.user
+                    accountCode = Api.accountCode
                     prompts = Api.prompts()
+                    runCatching { Api.syncGallery(context) }
                     if (prompts.isNotEmpty() && prompts.none { it.first == selectedPrompt }) {
                         selectedPrompt = prompts[0].first
                         Api.pid = selectedPrompt
@@ -870,6 +981,8 @@ fun MainScreen() {
     }
     LaunchedEffect(page, viewerStart) {
         if (page == MainPage.GALLERY && viewerStart == null) {
+            runCatching { Api.syncGallery(context) }
+            galleryFiles = withContext(Dispatchers.IO) { GalleryStorage.list(context) }
             while (isActive) {
                 galleryFiles = withContext(Dispatchers.IO) { GalleryStorage.list(context) }
                 delay(1500)
@@ -932,6 +1045,7 @@ fun MainScreen() {
         scope.launch {
             try {
                 val saved = withContext(Dispatchers.IO) { GalleryStorage.save(context, source, "original") }
+                runCatching { Api.syncGallery(context) }
                 if (enhance) {
                     GalleryStorage.ensureOriginalBackup(context, saved)
                     enqueueEnhancement(context, saved, selectedPrompt)
@@ -949,6 +1063,54 @@ fun MainScreen() {
             } finally {
                 savingPhoto = false
             }
+        }
+    }
+
+
+
+    fun showAccountCode() {
+        if (accountBusy) return
+        if (Api.accountCode.isNotBlank()) { accountCode = Api.accountCode; return }
+        accountBusy = true
+        accountError = ""
+        scope.launch {
+            try { accountCode = Api.regenerateAccountCode() }
+            catch (e: Exception) { accountError = e.message ?: "Could not retrieve your account code" }
+            finally { accountBusy = false }
+        }
+    }
+
+    fun logoutForSwitch() {
+        if (accountBusy) return
+        accountBusy = true
+        accountError = ""
+        scope.launch {
+            try {
+                Api.disconnect()
+                accountName = ""
+                accountCode = ""
+                accountSwitchReady = true
+                message = "Logged out. Enter the other account's 4-digit code."
+            } catch (e: Exception) { accountError = e.message ?: "Could not log out" }
+            finally { accountBusy = false }
+        }
+    }
+
+    fun loginAnotherAccount(code: String) {
+        if (accountBusy) return
+        accountBusy = true
+        accountError = ""
+        scope.launch {
+            try {
+                Api.loginWithCode(code)
+                accountName = Api.user
+                accountCode = Api.accountCode
+                accountSwitchReady = false
+                runCatching { Api.syncGallery(context) }
+                galleryFiles = withContext(Dispatchers.IO) { GalleryStorage.list(context) }
+                message = "Account connected. Cloud gallery synced."
+            } catch (e: Exception) { accountError = e.message ?: "Unable to log in with that code" }
+            finally { accountBusy = false }
         }
     }
 
@@ -1077,6 +1239,7 @@ fun MainScreen() {
                         scope.launch {
                             try {
                                 withContext(Dispatchers.IO) { GalleryStorage.revertOriginal(context, file) }
+                                runCatching { Api.syncGallery(context) }
                                 galleryFiles = withContext(Dispatchers.IO) { GalleryStorage.list(context) }
                                 Toast.makeText(context, "Original photo restored", Toast.LENGTH_SHORT).show()
                             } catch (e: Exception) { message = e.message ?: "Unable to restore original" }
@@ -1107,7 +1270,14 @@ fun MainScreen() {
     }
     if (settingsOpen) {
         CameraSettingsDialog(
-            accountName = Api.user,
+            accountName = accountName,
+            accountCode = accountCode,
+            accountBusy = accountBusy,
+            accountError = accountError,
+            switchReady = accountSwitchReady,
+            onShowCode = { showAccountCode() },
+            onLogoutForSwitch = { logoutForSwitch() },
+            onLoginCode = { loginAnotherAccount(it) },
             serverStatus = serverStatus,
             serverOnline = serverOnline,
             checkingServer = checkingServer,
@@ -1130,6 +1300,13 @@ fun MainScreen() {
 @Composable
 private fun CameraSettingsDialog(
     accountName: String,
+    accountCode: String,
+    accountBusy: Boolean,
+    accountError: String,
+    switchReady: Boolean,
+    onShowCode: () -> Unit,
+    onLogoutForSwitch: () -> Unit,
+    onLoginCode: (String) -> Unit,
     serverStatus: String,
     serverOnline: Boolean?,
     checkingServer: Boolean,
@@ -1140,13 +1317,29 @@ private fun CameraSettingsDialog(
     onGridChange: (Int) -> Unit,
     onClose: () -> Unit
 ) {
+    var showCodeDialog by remember { mutableStateOf(false) }
+    var showLogoutWarning by remember { mutableStateOf(false) }
+    var showLoginDialog by remember { mutableStateOf(false) }
+    var savedCodeConfirmed by remember { mutableStateOf(false) }
+    var enteredCode by remember { mutableStateOf("") }
+    LaunchedEffect(switchReady) { if (switchReady) showLoginDialog = true }
+    LaunchedEffect(accountName) {
+        if (accountName.isNotBlank()) { showLoginDialog = false; enteredCode = "" }
+    }
     AlertDialog(
         onDismissRequest = onClose,
         title = { Text("Camera settings") },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text("Device profile", style = MaterialTheme.typography.labelMedium, color = Color.Gray)
-                Text(accountName.ifBlank { "Camera-only mode · not connected yet" }, style = MaterialTheme.typography.titleMedium)
+                Text("My Account", style = MaterialTheme.typography.labelMedium, color = Color.Gray)
+                Text(accountName.ifBlank { "Creating your account when the server is online…" }, style = MaterialTheme.typography.titleMedium)
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedButton(enabled = !accountBusy, onClick = { showCodeDialog = true; onShowCode() }) { Text("Show Code") }
+                    Button(enabled = !accountBusy, onClick = { savedCodeConfirmed = false; showLogoutWarning = true }) {
+                        Text("Login Another Account")
+                    }
+                }
+                if (accountError.isNotBlank()) Text(accountError, color = Color(0xFFFFAAB6), style = MaterialTheme.typography.bodySmall)
                 Text("Server status", style = MaterialTheme.typography.labelMedium, color = Color.Gray)
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     val statusColor = when (serverOnline) {
@@ -1186,6 +1379,71 @@ private fun CameraSettingsDialog(
         },
         confirmButton = { TextButton(onClick = onClose) { Text("Done") } }
     )
+
+    if (showCodeDialog) {
+        AlertDialog(
+            onDismissRequest = { showCodeDialog = false },
+            title = { Text("Your account code") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text("Save this 4-digit code. It is the only information needed to log in to this account on another device.")
+                    Text(if (accountCode.length == 4) accountCode else if (accountBusy) "Loading…" else "Code unavailable",
+                        style = MaterialTheme.typography.headlineLarge, color = Color(0xFFFFB5CE))
+                    Text("Keep this code private. Anyone with it can access your account gallery.",
+                        color = Color.Gray, style = MaterialTheme.typography.bodySmall)
+                }
+            },
+            confirmButton = { TextButton(onClick = { showCodeDialog = false }) { Text("Done") } }
+        )
+    }
+
+    if (showLogoutWarning) {
+        AlertDialog(
+            onDismissRequest = { if (!accountBusy) showLogoutWarning = false },
+            title = { Text("Save your code before logging out") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("You will need your current 4-digit code to return to this account and its backed-up photos.")
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Checkbox(checked = savedCodeConfirmed, onCheckedChange = { savedCodeConfirmed = it })
+                        Text("I have saved my 4-digit code")
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(enabled = savedCodeConfirmed && !accountBusy, onClick = {
+                    showLogoutWarning = false
+                    onLogoutForSwitch()
+                }) { Text(if (accountBusy) "Logging out…" else "Confirm & Logout") }
+            },
+            dismissButton = { TextButton(enabled = !accountBusy, onClick = { showLogoutWarning = false }) { Text("Cancel") } }
+        )
+    }
+
+    if (showLoginDialog) {
+        AlertDialog(
+            onDismissRequest = { if (!accountBusy) showLoginDialog = false },
+            title = { Text("Login another account") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("Enter that account's 4-digit code. Its cloud photos will appear in this device's gallery.")
+                    OutlinedTextField(
+                        value = enteredCode,
+                        onValueChange = { value -> enteredCode = value.filter { it.isDigit() }.take(4) },
+                        label = { Text("4-digit account code") },
+                        singleLine = true
+                    )
+                    if (accountError.isNotBlank()) Text(accountError, color = Color(0xFFFFAAB6))
+                }
+            },
+            confirmButton = {
+                TextButton(enabled = enteredCode.length == 4 && !accountBusy, onClick = { onLoginCode(enteredCode) }) {
+                    Text(if (accountBusy) "Connecting…" else "Login")
+                }
+            },
+            dismissButton = { TextButton(enabled = !accountBusy, onClick = { showLoginDialog = false }) { Text("Cancel") } }
+        )
+    }
 }
 
 private fun Float.formatZoom(): String = if (this % 1f == 0f) this.toInt().toString() else String.format("%.1f", this)
