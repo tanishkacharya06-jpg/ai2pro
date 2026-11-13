@@ -1,0 +1,25 @@
+name: Export AI Camera Android source
+on:
+  push:
+    branches: [v1.7-upgrade]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  export-source:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Decode Android source archive
+        run: |
+          base64 --decode AICamera-v1.6-source.zip.b64 > /tmp/aicamera-source.zip
+          unzip -q /tmp/aicamera-source.zip -d source-unpacked
+          test -f source-unpacked/android-project/app/src/main/java/com/example/aicamera/MainActivity.kt
+          cd source-unpacked
+          zip -qr ../AICamera-v1.6-android-source.zip android-project
+      - uses: actions/upload-artifact@v4
+        with:
+          name: AICamera-v1.6-android-source
+          path: AICamera-v1.6-android-source.zip
+          if-no-files-found: error
+          retention-days: 7
