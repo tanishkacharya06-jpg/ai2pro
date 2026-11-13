@@ -108,6 +108,7 @@ class EnhancementWorker(
         Api.initialize(applicationContext)
         return try {
             setProgress(workDataOf(KEY_STAGE to "Connecting to enhancement server"))
+            Api.connectGuest()
             val outputs = Api.process(source, promptId, applicationContext.cacheDir, requestId) { message ->
                 setProgressAsync(workDataOf(KEY_STAGE to message))
             }
