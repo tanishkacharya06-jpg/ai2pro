@@ -112,13 +112,11 @@ class EnhancementWorker(
                 setProgressAsync(workDataOf(KEY_STAGE to message))
             }
             if (outputs.isEmpty()) throw IOException("The enhancement server returned no images")
-            var savedCount = 0
-            outputs.forEach { output ->
-                GalleryStorage.save(applicationContext, output, "enhanced")
-                savedCount++
-                output.delete()
-            }
-            Result.success(workDataOf(KEY_TASK_STATUS to "completed", "result_count" to savedCount))
+            // Replace the existing visible gallery item instead of creating a second entry.
+            // GalleryStorage keeps the original in its private backup folder for Revert.
+            GalleryStorage.replacePrimary(applicationContext, source, outputs.first())
+            outputs.forEach { it.delete() }
+            Result.success(workDataOf(KEY_TASK_STATUS to "completed", "result_count" to 1))
         } catch (e: AuthExpired) {
             Result.success(workDataOf(KEY_TASK_STATUS to "failed", KEY_ERROR to "Your server session expired. Sign in again, then retry this task."))
         } catch (e: ApiHttpException) {
