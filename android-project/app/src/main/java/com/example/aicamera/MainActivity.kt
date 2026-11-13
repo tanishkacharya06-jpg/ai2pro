@@ -849,22 +849,31 @@ fun MainScreen(onLogout: () -> Unit) {
     fun shoot() {
         if (captureRunning || activeCamera == null) return
         captureRunning = true
-        val file = File(context.cacheDir, "capture_${UUID.randomUUID()}.jpg")
-        capture.takePicture(
-            ImageCapture.OutputFileOptions.Builder(file).build(),
-            ContextCompat.getMainExecutor(context),
-            object : ImageCapture.OnImageSavedCallback {
-                override fun onImageSaved(output: ImageCapture.OutputFileResults) {
-                    captureRunning = false
-                    pendingPhoto = file
-                }
-                override fun onError(exception: ImageCaptureException) {
-                    captureRunning = false
-                    file.delete()
-                    message = exception.message ?: "Photo capture failed"
+        scope.launch {
+            if (timerSeconds > 0) {
+                for (remaining in timerSeconds downTo 1) {
+                    message = "Photo in ${remaining}…"
+                    delay(1000)
                 }
             }
-        )
+            val file = File(context.cacheDir, "capture_${UUID.randomUUID()}.jpg")
+            capture.takePicture(
+                ImageCapture.OutputFileOptions.Builder(file).build(),
+                ContextCompat.getMainExecutor(context),
+                object : ImageCapture.OnImageSavedCallback {
+                    override fun onImageSaved(output: ImageCapture.OutputFileResults) {
+                        captureRunning = false
+                        message = ""
+                        pendingPhoto = file
+                    }
+                    override fun onError(exception: ImageCaptureException) {
+                        captureRunning = false
+                        file.delete()
+                        message = exception.message ?: "Photo capture failed"
+                    }
+                }
+            )
+        }
     }
 
     fun cancelPreview() {
@@ -880,6 +889,7 @@ fun MainScreen(onLogout: () -> Unit) {
             try {
                 val saved = withContext(Dispatchers.IO) { GalleryStorage.save(context, source, "original") }
                 if (enhance) {
+                    GalleryStorage.ensureOriginalBackup(context, saved)
                     enqueueEnhancement(context, saved, selectedPrompt)
                     Toast.makeText(context, "Original saved · added to enhancement queue", Toast.LENGTH_SHORT).show()
                 } else {
@@ -924,10 +934,30 @@ fun MainScreen(onLogout: () -> Unit) {
                 }
 
                 Row(Modifier.fillMaxWidth().align(Alignment.TopCenter).padding(10.dp), verticalAlignment = Alignment.CenterVertically) {
-                    TextButton(onClick = onLogout) { Text("Log out", color = Color.White) }
+                    TextButton(onClick = { settingsOpen = true }) { Text("⚙ Settings", color = Color.White) }
                     Spacer(Modifier.weight(1f))
-                    TextButton(onClick = { cameraFront = !cameraFront; zoomRatio = 1f }) {
+                    val hasFlash = activeCamera?.cameraInfo?.hasFlashUnit() == true
+                    TextButton(enabled = hasFlash, onClick = {
+                        flashEnabled = !flashEnabled
+                        activeCamera?.cameraControl?.enableTorch(flashEnabled)
+                    }) { Text(if (!hasFlash) "No flash" else if (flashEnabled) "Flash ON" else "Flash OFF", color = Color.White) }
+                    TextButton(onClick = { cameraFront = !cameraFront; zoomRatio = 1f; flashEnabled = false }) {
                         Text("⇄ Switch", color = Color.White)
+                    }
+                }
+                if (gridMode > 0) {
+                    Canvas(Modifier.fillMaxSize()) {
+                        val divisions = when (gridMode) {
+                            3 -> listOf(1f / 3f, 2f / 3f)
+                            4 -> listOf(0.25f, 0.5f, 0.75f)
+                            else -> listOf(0.382f, 0.618f)
+                        }
+                        divisions.forEach { fraction ->
+                            drawLine(Color.White.copy(alpha = 0.35f), Offset(size.width * fraction, 0f),
+                                Offset(size.width * fraction, size.height), 1.dp.toPx())
+                            drawLine(Color.White.copy(alpha = 0.35f), Offset(0f, size.height * fraction),
+                                Offset(size.width, size.height * fraction), 1.dp.toPx())
+                        }
                     }
                 }
                 if (message.isNotBlank()) {
@@ -985,7 +1015,30 @@ fun MainScreen(onLogout: () -> Unit) {
             val snapshot = viewerFiles
             val start = viewerStart
             if (snapshot != null && start != null) {
-                PhotoViewer(snapshot, start) { viewerFiles = null; viewerStart = null }
+                PhotoViewer(
+                    files = snapshot,
+                    startFile = start,
+                    onClose = { viewerFiles = null; viewerStart = null },
+                    onEnhance = { file ->
+                        scope.launch {
+                            try {
+                                GalleryStorage.ensureOriginalBackup(context, file)
+                                enqueueEnhancement(context, file, selectedPrompt)
+                                Toast.makeText(context, "Added to enhancement queue", Toast.LENGTH_SHORT).show()
+                                page = MainPage.QUEUE
+                            } catch (e: Exception) { message = e.message ?: "Unable to queue enhancement" }
+                        }
+                    },
+                    onRevert = { file ->
+                        scope.launch {
+                            try {
+                                withContext(Dispatchers.IO) { GalleryStorage.revertOriginal(context, file) }
+                                galleryFiles = withContext(Dispatchers.IO) { GalleryStorage.list(context) }
+                                Toast.makeText(context, "Original photo restored", Toast.LENGTH_SHORT).show()
+                            } catch (e: Exception) { message = e.message ?: "Unable to restore original" }
+                        }
+                    }
+                )
             }
             pendingPhoto?.let { file ->
                 CapturePreviewDialog(file, savingPhoto, { cancelPreview() }, { savePreview(false) }, { savePreview(true) })
@@ -1008,6 +1061,70 @@ fun MainScreen(onLogout: () -> Unit) {
             )
         }
     }
+    if (settingsOpen) {
+        CameraSettingsDialog(
+            accountName = Api.user,
+            timerSeconds = timerSeconds,
+            gridMode = gridMode,
+            onTimerChange = {
+                timerSeconds = it
+                Api.prefs.edit().putInt("camera_timer", it).apply()
+            },
+            onGridChange = {
+                gridMode = it
+                Api.prefs.edit().putInt("camera_grid", it).apply()
+            },
+            onClose = { settingsOpen = false },
+            onDisconnect = {
+                settingsOpen = false
+                onLogout()
+            }
+        )
+    }
+}
+
+@Composable
+private fun CameraSettingsDialog(
+    accountName: String,
+    timerSeconds: Int,
+    gridMode: Int,
+    onTimerChange: (Int) -> Unit,
+    onGridChange: (Int) -> Unit,
+    onClose: () -> Unit,
+    onDisconnect: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onClose,
+        title = { Text("Camera settings") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("Account connected", style = MaterialTheme.typography.labelMedium, color = Color.Gray)
+                Text(accountName, style = MaterialTheme.typography.titleMedium)
+                Text("Capture timer")
+                Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
+                    listOf(0, 3, 5, 10).forEach { seconds ->
+                        TextButton(onClick = { onTimerChange(seconds) }) {
+                            val label = if (seconds == 0) "Off" else "${seconds}s"
+                            Text((if (timerSeconds == seconds) "✓ " else "") + label)
+                        }
+                    }
+                }
+                Text("Composition grid")
+                Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
+                    listOf(0, 3, 4, 5).forEach { mode ->
+                        val label = when (mode) { 0 -> "Off"; 3 -> "3×3"; 4 -> "4×4"; else -> "Golden" }
+                        TextButton(onClick = { onGridChange(mode) }) {
+                            Text((if (gridMode == mode) "✓ " else "") + label)
+                        }
+                    }
+                }
+                Text("Tap the preview to focus. Flashlight is available only on devices with a flash.",
+                    color = Color.Gray, style = MaterialTheme.typography.bodySmall)
+            }
+        },
+        confirmButton = { TextButton(onClick = onClose) { Text("Done") } },
+        dismissButton = { TextButton(onClick = onDisconnect) { Text("Change account") } }
+    )
 }
 
 private fun Float.formatZoom(): String = if (this % 1f == 0f) this.toInt().toString() else String.format("%.1f", this)
