@@ -1,4 +1,4 @@
-AI CAMERA BACKEND v1.8 - HOSTING GUIDE
+AI CAMERA BACKEND v1.9 - HOSTING GUIDE
 
 WHAT THIS SERVER DOES
 - Provides the image-enhancement API used by the Android camera app.
@@ -44,7 +44,7 @@ Compose stores the SQLite database and job files in the named volume mounted at 
 ANDROID APP BEHAVIOUR
 - The app opens directly to the camera. Website login/pairing is not needed just to open it.
 - When a server can be discovered, the app automatically creates/restores its guest
-  device profile, fetches enhancement presets, and shows Online · v1.8 in Settings.
+  device profile, fetches enhancement presets, and shows Online · v1.9 in Settings.
 - If the server is offline, local camera capture and local gallery remain available;
   enhancement will require the server to return online.
 - The website UI remains available as an optional separate interface.
