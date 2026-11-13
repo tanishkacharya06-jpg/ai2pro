@@ -1,15 +1,22 @@
-Set env vars: APP_TOKEN (secret), ENGINE=openai (or echo for testing), OPENAI_API_KEY.
-Local:   pip install -r requirements.txt && uvicorn server:app --host 0.0.0.0 --port 8000
-Hosted:  deploy this folder with the Dockerfile on Render / Railway / Fly.io / any VPS,
-         then put the https URL + APP_TOKEN into the app's settings (gear icon).
+AI Camera server v1.9
 
---- ChatGPT website engine (free account, no API credit) ---
-pip install -r requirements.txt
-python -m playwright install chromium        (or: set BROWSER_CHANNEL=chrome to use installed Chrome)
-python login.py                              (log in once, press Enter; server must NOT be running)
-set APP_TOKEN=mysecret
-set ENGINE=chatgpt
-python -m uvicorn server:app --host 0.0.0.0 --port 8000
-Keep the browser window open. Works only on your own computer, not on cloud hosts.
+HOSTING
+- Deploy the contents of this folder (including Dockerfile and requirements.txt) to Render, Railway, Fly.io, or a VPS.
+- The app discovers the current Cloudflare quick-tunnel URL using the configured ntfy topic. For a fixed host, enter its HTTPS URL in the Android app's Server URL setting when that setting is available.
+- The public GET /health endpoint returns online status and server version for the Android Settings screen.
 
-Android v1.8: sign in on the website, select Phone app, then enter the one-time 4-digit code in the Android app. The code expires after 5 minutes and can be redeemed once. The app stores a revocable device token using Android Keystore-backed encrypted preferences; website login remains unchanged. A wrong-code rate limit is applied per client IP. Existing sessions and Android v1.7 clients remain compatible.\n\nAndroid v1.7 queue support: the /enhance endpoint accepts an optional request_id form field. Repeated requests with the same request_id and signed-in user reuse an existing processing/completed job while it remains available. Older v1.6 Android clients may omit request_id and continue to work.
+LOCAL
+  pip install -r requirements.txt
+  python -m uvicorn server:app --host 0.0.0.0 --port 8000
+
+IMAGE ENGINE
+- ENGINE=echo is a connectivity/demo engine and returns an unchanged image.
+- ENGINE=openai requires OPENAI_API_KEY and uses the OpenAI image editing API.
+- ENGINE=chatgpt uses a locally authenticated Playwright browser. Run login.py once before starting the server; keep the browser window open. This mode is for your own computer, not ordinary cloud hosting.
+
+ANDROID APP
+- The Android app opens directly to the camera. No website login or pairing code is required.
+- When this server is reachable, the app creates/restores a per-installation guest device profile automatically.
+- If the server is offline, the camera and local gallery remain usable. Settings displays Online/Offline and has a Refresh button.
+- Website account login and the website UI are retained as separate features; they are not part of Android camera startup.
+- SQLite data.db is created automatically. Back it up before replacing server files on an existing installation.
