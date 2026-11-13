@@ -114,7 +114,7 @@ object GalleryStorage {
             ?: throw IOException("The enhanced image could not be decoded")
         val format = when (target.extension.lowercase()) {
             "png" -> Bitmap.CompressFormat.PNG
-            "webp" -> Bitmap.CompressFormat.WEBP_LOSSY
+            "webp" -> Bitmap.CompressFormat.WEBP
             else -> Bitmap.CompressFormat.JPEG
         }
         val temp = File(target.parentFile, ".${target.name}.${UUID.randomUUID()}.tmp")
