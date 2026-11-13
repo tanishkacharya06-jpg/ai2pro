@@ -804,9 +804,6 @@ fun MainScreen() {
     var serverOnline by remember { mutableStateOf<Boolean?>(null) }
     var serverStatus by remember { mutableStateOf("Checking server…") }
     var checkingServer by remember { mutableStateOf(false) }
-    var serverUrl by remember {
-        mutableStateOf(Api.base.takeIf { it.startsWith("http", ignoreCase = true) } ?: "")
-    }
     var timerSeconds by remember { mutableIntStateOf(Api.prefs.getInt("camera_timer", 0)) }
     var gridMode by remember { mutableIntStateOf(Api.prefs.getInt("camera_grid", 0)) }
 
@@ -1114,19 +1111,6 @@ fun MainScreen() {
             serverStatus = serverStatus,
             serverOnline = serverOnline,
             checkingServer = checkingServer,
-            serverUrl = serverUrl,
-            onServerUrlChange = { serverUrl = it },
-            onSaveServerUrl = {
-                val candidate = serverUrl.trim().trimEnd('/')
-                if (candidate.startsWith("https://", ignoreCase = true) ||
-                    candidate.startsWith("http://", ignoreCase = true)) {
-                    Api.link = candidate
-                    Api.base = candidate
-                    refreshServer()
-                } else {
-                    message = "Enter a valid server URL beginning with http:// or https://"
-                }
-            },
             onRefreshServer = { refreshServer() },
             timerSeconds = timerSeconds,
             gridMode = gridMode,
@@ -1149,9 +1133,6 @@ private fun CameraSettingsDialog(
     serverStatus: String,
     serverOnline: Boolean?,
     checkingServer: Boolean,
-    serverUrl: String,
-    onServerUrlChange: (String) -> Unit,
-    onSaveServerUrl: () -> Unit,
     onRefreshServer: () -> Unit,
     timerSeconds: Int,
     gridMode: Int,
@@ -1167,22 +1148,6 @@ private fun CameraSettingsDialog(
                 Text("Device profile", style = MaterialTheme.typography.labelMedium, color = Color.Gray)
                 Text(accountName.ifBlank { "Camera-only mode · not connected yet" }, style = MaterialTheme.typography.titleMedium)
                 Text("Server status", style = MaterialTheme.typography.labelMedium, color = Color.Gray)
-                OutlinedTextField(
-                    value = serverUrl,
-                    onValueChange = onServerUrlChange,
-                    label = { Text("Server URL (optional)") },
-                    placeholder = { Text("https://your-server.example") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
-                )
-                Text(
-                    "Paste your hosted backend URL here. Leave blank to keep automatic tunnel discovery.",
-                    color = Color.Gray,
-                    style = MaterialTheme.typography.bodySmall
-                )
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-                    TextButton(onClick = onSaveServerUrl) { Text("Save server URL") }
-                }
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     val statusColor = when (serverOnline) {
                         true -> Color(0xFF69D69A)
