@@ -39,6 +39,27 @@ object GalleryStorage {
                 }
             prefs.edit().putBoolean("legacy_private_gallery_imported", true).apply()
         }
+        if (!prefs.getBoolean("legacy_account_gallery_imported", false)) {
+            val oldUser = prefs.getString("legacy_gallery_user", "").orEmpty().trim().lowercase()
+            if (oldUser.isNotBlank()) {
+                val oldKey = MessageDigest.getInstance("SHA-256").digest(oldUser.toByteArray())
+                    .joinToString("") { "%02x".format(it) }.take(24)
+                if (oldKey != accountKey()) {
+                    val oldDir = File(root, oldKey)
+                    oldDir.listFiles()?.filter { it.isFile && it.extension.lowercase() in setOf("jpg", "jpeg", "png", "webp") }
+                        ?.forEach { old ->
+                            val target = File(dir, old.name)
+                            if (!target.exists()) runCatching { copyAtomically(old, target) }
+                        }
+                    val oldBackups = File(File(context.filesDir, "photo_originals"), oldKey)
+                    oldBackups.listFiles()?.filter { it.isFile }?.forEach { old ->
+                        val target = File(backupDirectory(context), old.name)
+                        if (!target.exists()) runCatching { copyAtomically(old, target) }
+                    }
+                }
+            }
+            prefs.edit().putBoolean("legacy_account_gallery_imported", true).apply()
+        }
         return dir
     }
 
