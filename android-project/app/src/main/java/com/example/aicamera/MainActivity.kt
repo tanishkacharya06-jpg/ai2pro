@@ -466,11 +466,26 @@ private fun CameraPreview(
     var previewView by remember { mutableStateOf<PreviewView?>(null) }
     var provider by remember { mutableStateOf<ProcessCameraProvider?>(null) }
 
-    Box(Modifier.fillMaxSize().pointerInput(frontFacing) {
-        detectTransformGestures { _, _, zoomChange, _ ->
-            if (zoomChange != 1f) onZoomGesture(zoomChange)
+    var boundCamera by remember { mutableStateOf<Camera?>(null) }
+    Box(Modifier.fillMaxSize()
+        .pointerInput(frontFacing) {
+            detectTapGestures { position ->
+                val view = previewView
+                val camera = boundCamera
+                if (view != null && camera != null) {
+                    runCatching {
+                        val point = view.meteringPointFactory.createPoint(position.x, position.y)
+                        camera.cameraControl.startFocusAndMetering(FocusMeteringAction.Builder(point).build())
+                    }
+                }
+            }
         }
-    }) {
+        .pointerInput(frontFacing) {
+            detectTransformGestures { _, _, zoomChange, _ ->
+                if (zoomChange != 1f) onZoomGesture(zoomChange)
+            }
+        }
+    ) {
         AndroidView(
             modifier = Modifier.fillMaxSize(),
             factory = { c -> PreviewView(c).also { previewView = it } },
@@ -500,6 +515,7 @@ private fun CameraPreview(
                 cameraProvider.unbindAll()
                 val preview = Preview.Builder().build().also { it.setSurfaceProvider(view.surfaceProvider) }
                 val camera = cameraProvider.bindToLifecycle(context as LifecycleOwner, selected, preview, capture)
+                boundCamera = camera
                 val maxZoom = camera.cameraInfo.zoomState.value?.maxZoomRatio ?: 1f
                 onCameraReady(camera, maxZoom.coerceAtLeast(1f))
             }
@@ -512,6 +528,7 @@ private fun CameraPreview(
     DisposableEffect(previewView) {
         onDispose {
             provider?.unbindAll()
+            boundCamera = null
             onCameraReady(null, 1f)
         }
     }
@@ -598,10 +615,18 @@ private fun GalleryScreen(
 }
 
 @Composable
-private fun PhotoViewer(files: List<File>, startFile: File, onClose: () -> Unit) {
+private fun PhotoViewer(
+    files: List<File>,
+    startFile: File,
+    onClose: () -> Unit,
+    onEnhance: (File) -> Unit,
+    onRevert: (File) -> Unit
+) {
+    val context = LocalContext.current
     var index by remember(files, startFile) { mutableIntStateOf(files.indexOf(startFile).coerceAtLeast(0)) }
     val current = files.getOrNull(index) ?: startFile
     val bitmap = rememberPhotoBitmap(current, 1)
+    val canRevert = remember(current) { GalleryStorage.hasOriginalBackup(context, current) }
     var scale by remember(current) { mutableFloatStateOf(1f) }
     var offset by remember(current) { mutableStateOf(Offset.Zero) }
 
@@ -646,11 +671,19 @@ private fun PhotoViewer(files: List<File>, startFile: File, onClose: () -> Unit)
             }
             Text("Pinch or double-tap to zoom", color = Color.White.copy(alpha = 0.75f),
                 modifier = Modifier.align(Alignment.TopCenter).padding(top = 20.dp))
-            Row(Modifier.align(Alignment.BottomCenter).fillMaxWidth().padding(18.dp),
-                horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                TextButton(enabled = index > 0, onClick = { index--; }) { Text("‹ Previous", color = Color.White) }
-                Text("${index + 1} / ${files.size}", color = Color.White)
-                TextButton(enabled = index < files.lastIndex, onClick = { index++; }) { Text("Next ›", color = Color.White) }
+            Column(Modifier.align(Alignment.BottomCenter).fillMaxWidth().padding(12.dp)) {
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center) {
+                    TextButton(onClick = { onEnhance(current); onClose() }) { Text("Enhance", color = Color.White) }
+                    if (canRevert) TextButton(onClick = { onRevert(current); onClose() }) {
+                        Text("Revert original", color = Color.White)
+                    }
+                }
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically) {
+                    TextButton(enabled = index > 0, onClick = { index--; }) { Text("‹ Previous", color = Color.White) }
+                    Text("${index + 1} / ${files.size}", color = Color.White)
+                    TextButton(enabled = index < files.lastIndex, onClick = { index++; }) { Text("Next ›", color = Color.White) }
+                }
             }
         }
     }
@@ -745,6 +778,10 @@ fun MainScreen(onLogout: () -> Unit) {
     var viewerStart by remember { mutableStateOf<File?>(null) }
     var workInfos by remember { mutableStateOf(listOf<WorkInfo>()) }
     var message by remember { mutableStateOf("") }
+    var flashEnabled by remember { mutableStateOf(false) }
+    var settingsOpen by remember { mutableStateOf(false) }
+    var timerSeconds by remember { mutableIntStateOf(Api.prefs.getInt("camera_timer", 0)) }
+    var gridMode by remember { mutableIntStateOf(Api.prefs.getInt("camera_grid", 0)) }
 
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
         if (uri != null) {
