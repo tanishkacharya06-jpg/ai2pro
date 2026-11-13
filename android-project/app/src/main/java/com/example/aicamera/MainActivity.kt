@@ -109,7 +109,7 @@ object Api {
         prefs = appContext.getSharedPreferences("cfg", Context.MODE_PRIVATE)
         val masterKey = MasterKey.Builder(appContext).setKeyScheme(MasterKey.KeyScheme.AES256_GCM).build()
         securePrefs = EncryptedSharedPreferences.create(
-            "secure_auth", appContext, masterKey,
+            appContext, "secure_auth", masterKey,
             EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
             EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
         )
