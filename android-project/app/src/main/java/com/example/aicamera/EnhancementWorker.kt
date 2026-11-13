@@ -119,7 +119,7 @@ class EnhancementWorker(
             outputs.forEach { it.delete() }
             Result.success(workDataOf(KEY_TASK_STATUS to "completed", "result_count" to 1))
         } catch (e: AuthExpired) {
-            Result.success(workDataOf(KEY_TASK_STATUS to "failed", KEY_ERROR to "Your server session expired. Sign in again, then retry this task."))
+            Result.success(workDataOf(KEY_TASK_STATUS to "failed", KEY_ERROR to "Device session expired. Check server connection, then retry this task."))
         } catch (e: ApiHttpException) {
             if (e.retryable && runAttemptCount < 4) {
                 setProgress(workDataOf(KEY_STAGE to "Temporary server error; retrying"))
