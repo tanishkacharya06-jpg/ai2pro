@@ -43,6 +43,8 @@ def init():
             name TEXT NOT NULL, created REAL NOT NULL, last_seen REAL NOT NULL, revoked INTEGER DEFAULT 0);
         CREATE TABLE IF NOT EXISTS account_profiles(user_name TEXT PRIMARY KEY, code_hash TEXT NOT NULL UNIQUE,
             installation_hash TEXT NOT NULL UNIQUE, created REAL NOT NULL);
+        CREATE TABLE IF NOT EXISTS device_installations(installation_hash TEXT PRIMARY KEY, user_name TEXT NOT NULL,
+            updated REAL NOT NULL);
         CREATE TABLE IF NOT EXISTS cloud_gallery(user_name TEXT NOT NULL, name TEXT NOT NULL, file_path TEXT NOT NULL,
             modified INTEGER NOT NULL, updated REAL NOT NULL, size INTEGER NOT NULL, PRIMARY KEY(user_name,name));""")
         device_columns = {row["name"] for row in c.execute("PRAGMA table_info(devices)").fetchall()}
@@ -352,7 +354,12 @@ def create_or_restore_device_profile(p: ProfileDeviceIn, req: Request):
     generated_code = ""
     with db() as c:
         c.execute("BEGIN IMMEDIATE")
-        profile = c.execute("SELECT user_name FROM account_profiles WHERE installation_hash=?", (install_hash,)).fetchone()
+        profile = c.execute("SELECT user_name FROM device_installations WHERE installation_hash=?", (install_hash,)).fetchone()
+        if not profile:
+            profile = c.execute("SELECT user_name FROM account_profiles WHERE installation_hash=?", (install_hash,)).fetchone()
+            if profile:
+                c.execute("INSERT OR IGNORE INTO device_installations(installation_hash,user_name,updated) VALUES(?,?,?)",
+                          (install_hash, profile["user_name"], now))
         if profile:
             account_name = profile["user_name"]
         else:
@@ -369,6 +376,9 @@ def create_or_restore_device_profile(p: ProfileDeviceIn, req: Request):
                       (account_name, code_hash, install_hash, now))
             if old_device and old_device["user_name"].startswith("guest_"):
                 c.execute("UPDATE devices SET user_name=? WHERE id=?", (account_name, old_device["id"]))
+        c.execute("INSERT INTO device_installations(installation_hash,user_name,updated) VALUES(?,?,?) "
+                  "ON CONFLICT(installation_hash) DO UPDATE SET user_name=excluded.user_name,updated=excluded.updated",
+                  (install_hash, account_name, now))
         old = c.execute("SELECT id FROM devices WHERE install_hash=? AND user_name=? ORDER BY created DESC LIMIT 1",
                         (install_hash, account_name)).fetchone()
         if old:
@@ -403,6 +413,9 @@ def login_device_with_account_code(p: AccountCodeLogin, req: Request):
             if len(raw_install) < 20 or len(raw_install) > 128 or not all(ch.isalnum() or ch in "-_" for ch in raw_install):
                 raise HTTPException(400, "Invalid installation identifier")
             install_hash = hashlib.sha256(raw_install.encode()).hexdigest()
+            c.execute("INSERT INTO device_installations(installation_hash,user_name,updated) VALUES(?,?,?) "
+                      "ON CONFLICT(installation_hash) DO UPDATE SET user_name=excluded.user_name,updated=excluded.updated",
+                      (install_hash, account_name, now))
             old = c.execute("SELECT id FROM devices WHERE install_hash=? AND user_name=? ORDER BY created DESC LIMIT 1",
                             (install_hash, account_name)).fetchone()
             if old:
