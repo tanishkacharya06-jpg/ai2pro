@@ -38,6 +38,10 @@ def init():
         CREATE TABLE IF NOT EXISTS pair_codes(code_hash TEXT PRIMARY KEY, user_name TEXT NOT NULL, expires REAL NOT NULL, created REAL NOT NULL);
         CREATE TABLE IF NOT EXISTS devices(id TEXT PRIMARY KEY, user_name TEXT NOT NULL, token_hash TEXT NOT NULL UNIQUE,
             name TEXT NOT NULL, created REAL NOT NULL, last_seen REAL NOT NULL, revoked INTEGER DEFAULT 0);""")
+        device_columns = {row["name"] for row in c.execute("PRAGMA table_info(devices)").fetchall()}
+        if "install_hash" not in device_columns:
+            c.execute("ALTER TABLE devices ADD COLUMN install_hash TEXT")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_devices_install_hash ON devices(install_hash)")
         if not c.execute("SELECT 1 FROM users").fetchone():
             salt = secrets.token_hex(8)
             c.execute("INSERT INTO users VALUES('admin',?,?,1)", (salt, hashpw("admin", salt)))
@@ -292,6 +296,54 @@ def home():
 @app.get("/version")
 def version():
     return {"version": VERSION, "engine": ENGINE}
+
+@app.get("/health")
+def health():
+    return {"status": "online", "version": VERSION, "engine": ENGINE, "timestamp": int(time.time())}
+
+class GuestDeviceIn(BaseModel):
+    installation_id: str
+    device_name: str = "AI Camera"
+
+@app.post("/api/device/guest")
+def create_guest_device(p: GuestDeviceIn, req: Request):
+    installation_id = p.installation_id.strip()
+    if len(installation_id) < 20 or len(installation_id) > 128 or not all(ch.isalnum() or ch in "-_" for ch in installation_id):
+        raise HTTPException(400, "Invalid installation identifier")
+    ip = req.client.host if req.client else "unknown"
+    now = time.time()
+    with PAIR_RATE_LOCK:
+        key = "guest:" + ip
+        count, start = PAIR_RATE.get(key, (0, now))
+        if now - start > 600:
+            count, start = 0, now
+        if count >= 60:
+            raise HTTPException(429, "Too many automatic device connections. Try again later.")
+        PAIR_RATE[key] = (count + 1, start)
+    install_hash = hashlib.sha256(installation_id.encode()).hexdigest()
+    token = secrets.token_urlsafe(48)
+    token_hash = hashlib.sha256(token.encode()).hexdigest()
+    device_id = uuid.uuid4().hex
+    device_name = (p.device_name.strip() or "AI Camera")[:60]
+    with db() as c:
+        existing = c.execute(
+            "SELECT id,user_name FROM devices WHERE install_hash=? AND revoked=0 ORDER BY created DESC LIMIT 1",
+            (install_hash,)
+        ).fetchone()
+        if existing:
+            device_id = existing["id"]
+            guest_name = existing["user_name"]
+            c.execute(
+                "UPDATE devices SET token_hash=?,name=?,last_seen=?,revoked=0 WHERE id=?",
+                (token_hash, device_name, now, device_id)
+            )
+        else:
+            guest_name = "guest_" + secrets.token_hex(8)
+            c.execute(
+                "INSERT INTO devices(id,user_name,token_hash,name,created,last_seen,revoked,install_hash) VALUES(?,?,?,?,?,?,0,?)",
+                (device_id, guest_name, token_hash, device_name, now, now, install_hash)
+            )
+    return {"device_token": token, "device_id": device_id, "name": guest_name, "device_name": device_name}
 
 @app.post("/enhance")
 async def enhance(req: Request, photo: UploadFile, bg: BackgroundTasks, prompt_id: int = Form(0), request_id: str = Form("")):
