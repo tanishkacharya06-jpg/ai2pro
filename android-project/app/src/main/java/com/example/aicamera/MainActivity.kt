@@ -34,6 +34,7 @@ import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
@@ -823,6 +824,10 @@ fun MainScreen() {
         }
     }
 
+    LaunchedEffect(settingsOpen) {
+        if (settingsOpen) refreshServer()
+    }
+
     LaunchedEffect(Unit) {
         refreshServer()
         while (isActive) {
@@ -1124,7 +1129,10 @@ private fun CameraSettingsDialog(
         onDismissRequest = onClose,
         title = { Text("Camera settings") },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Column(
+                Modifier.heightIn(max = 480.dp).verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
                 Text("Device profile", style = MaterialTheme.typography.labelMedium, color = Color.Gray)
                 Text(accountName.ifBlank { "Camera-only mode · not connected yet" }, style = MaterialTheme.typography.titleMedium)
                 Text("Server URL or discovery code", style = MaterialTheme.typography.labelMedium, color = Color.Gray)
