@@ -27,6 +27,16 @@ jobs:
           unzip -q /tmp/aicamera-v1.6.zip -d source-unpacked
           test -f source-unpacked/android-project/app/src/main/java/com/example/aicamera/MainActivity.kt
           grep -q 'androidx.compose.ui.viewinterop.AndroidView' source-unpacked/android-project/app/src/main/java/com/example/aicamera/MainActivity.kt || grep -q 'import androidx.compose.ui.viewinterop.AndroidView' source-unpacked/android-project/app/src/main/java/com/example/aicamera/MainActivity.kt
+      - name: Export extracted Android source for upgrade
+        run: |
+          cd source-unpacked
+          zip -qr ../AICamera-v1.6-android-source.zip android-project
+      - uses: actions/upload-artifact@v4
+        with:
+          name: AICamera-v1.6-android-source
+          path: AICamera-v1.6-android-source.zip
+          if-no-files-found: error
+          retention-days: 7
       - name: Build original v1.6 project
         working-directory: source-unpacked/android-project
         run: gradle assembleDebug --no-daemon
