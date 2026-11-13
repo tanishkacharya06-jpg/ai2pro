@@ -115,6 +115,7 @@ class EnhancementWorker(
             // Replace the existing visible gallery item instead of creating a second entry.
             // GalleryStorage keeps the original in its private backup folder for Revert.
             GalleryStorage.replacePrimary(applicationContext, source, outputs.first())
+            runCatching { Api.syncGallery(applicationContext) }
             outputs.forEach { it.delete() }
             Result.success(workDataOf(KEY_TASK_STATUS to "completed", "result_count" to 1))
         } catch (e: AuthExpired) {
