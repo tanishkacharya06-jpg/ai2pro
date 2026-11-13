@@ -109,6 +109,10 @@ object Api {
     fun initialize(context: Context) {
         val appContext = context.applicationContext
         prefs = appContext.getSharedPreferences("cfg", Context.MODE_PRIVATE)
+        val oldUser = prefs.getString("user", "").orEmpty()
+        if (oldUser.isNotBlank() && prefs.getString("legacy_gallery_user", null).isNullOrBlank()) {
+            prefs.edit().putString("legacy_gallery_user", oldUser).apply()
+        }
         val masterKey = MasterKey.Builder(appContext).setKeyScheme(MasterKey.KeyScheme.AES256_GCM).build()
         securePrefs = EncryptedSharedPreferences.create(
             appContext, "secure_auth", masterKey,
