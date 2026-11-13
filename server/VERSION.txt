@@ -1,0 +1,4 @@
+AI Camera server v1.7
+- Keeps the v1.6 account, pairing, prompt, and enhancement API behavior.
+- Supports idempotent enhancement request IDs so persistent Android queue retries can resume an in-flight job without duplicating it.
+- Android app version 1.7 stores originals before queueing and saves enhanced outputs separately.
