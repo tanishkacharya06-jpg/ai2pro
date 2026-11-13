@@ -1,7 +1,7 @@
 name: Build AI Camera Android v1.9
 on:
   push:
-    branches: [v1.9-mvp]
+    branches: [v1.9-direct-camera]
   workflow_dispatch:
 permissions:
   contents: read
