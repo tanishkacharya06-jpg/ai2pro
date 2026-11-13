@@ -375,76 +375,8 @@ class MainActivity : ComponentActivity() {
 
 @Composable
 fun Root() {
-    var user by remember { mutableStateOf("") }
-    var checking by remember { mutableStateOf(true) }
-    val scope = rememberCoroutineScope()
-    LaunchedEffect(Unit) {
-        if (Api.sid.isNotBlank()) {
-            try { user = Api.validate() }
-            catch (_: Exception) { Api.sid = ""; Api.deviceId = ""; Api.user = "" }
-        }
-        checking = false
-    }
-    when {
-        checking -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
-        user.isBlank() -> PairingScreen { user = it }
-        else -> MainScreen {
-            scope.launch {
-                Api.disconnect()
-                user = ""
-            }
-        }
-    }
-}
-
-@Composable
-fun PairingScreen(onDone: (String) -> Unit) {
-    var serverCode by remember { mutableStateOf(Api.link) }
-    var pairCode by remember { mutableStateOf("") }
-    var msg by remember { mutableStateOf("") }
-    var busy by remember { mutableStateOf(false) }
-    var showServer by remember { mutableStateOf(false) }
-    val scope = rememberCoroutineScope()
-    Column(Modifier.fillMaxSize().padding(28.dp), verticalArrangement = Arrangement.Center) {
-        Text("AI Camera", style = MaterialTheme.typography.headlineLarge, color = Color.White)
-        Text("Connect your phone to your website account", color = Color.LightGray)
-        Spacer(Modifier.height(18.dp))
-        Text("On the website, sign in as usual and choose “Phone app” to generate a one-time 4-digit code. Enter it below.",
-            color = Color.LightGray)
-        Spacer(Modifier.height(18.dp))
-        OutlinedTextField(
-            value = pairCode,
-            onValueChange = { pairCode = it.filter(Char::isDigit).take(4) },
-            label = { Text("4-digit pairing code") },
-            singleLine = true,
-            modifier = Modifier.fillMaxWidth()
-        )
-        if (showServer) {
-            Spacer(Modifier.height(10.dp))
-            OutlinedTextField(
-                value = serverCode, onValueChange = { serverCode = it.trim() },
-                label = { Text("Server connection code or URL") }, singleLine = true,
-                modifier = Modifier.fillMaxWidth()
-            )
-        }
-        if (msg.isNotBlank()) Text(msg, color = Color(0xFFFF8797), modifier = Modifier.padding(top = 10.dp))
-        Spacer(Modifier.height(16.dp))
-        Button(enabled = !busy && pairCode.length == 4, onClick = {
-            busy = true
-            msg = ""
-            Api.link = serverCode.trim()
-            scope.launch {
-                try { onDone(Api.pair(pairCode)) }
-                catch (e: Exception) { msg = e.message ?: "Pairing failed" }
-                finally { busy = false }
-            }
-        }, modifier = Modifier.fillMaxWidth()) {
-            Text(if (busy) "Connecting…" else "Connect account")
-        }
-        TextButton(onClick = { showServer = !showServer }) {
-            Text(if (showServer) "Hide server settings" else "Server settings")
-        }
-    }
+    // The camera is the app's home screen. Server connection is checked in the background.
+    MainScreen()
 }
 
 @Composable
