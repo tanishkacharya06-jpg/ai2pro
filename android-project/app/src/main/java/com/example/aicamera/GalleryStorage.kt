@@ -10,11 +10,34 @@ import java.io.IOException
 import java.util.UUID
 import java.nio.file.Files
 import java.nio.file.StandardCopyOption
+import java.security.MessageDigest
 
 /** App-private gallery is the source of truth; MediaStore copies remain visible in the phone gallery. */
 object GalleryStorage {
-    fun directory(context: Context): File = File(context.filesDir, "gallery").apply {
-        if (!exists() && !mkdirs()) throw IOException("Unable to create the app gallery")
+    private fun accountKey(): String {
+        val account = Api.user.trim().lowercase().ifBlank { "unlinked-account" }
+        val bytes = MessageDigest.getInstance("SHA-256").digest(account.toByteArray())
+        return bytes.joinToString("") { "%02x".format(it) }.take(24)
+    }
+
+    private fun accountMediaPath(): String = "Pictures/AICamera/${accountKey()}/"
+
+    fun directory(context: Context): File {
+        val root = File(context.filesDir, "gallery_accounts")
+        val dir = File(root, accountKey())
+        if (!dir.exists() && !dir.mkdirs()) throw IOException("Unable to create the app gallery")
+        // One-time migration: v1.7 had a single local gallery before account switching existed.
+        val prefs = context.getSharedPreferences("cfg", Context.MODE_PRIVATE)
+        if (!prefs.getBoolean("legacy_private_gallery_imported", false)) {
+            val legacy = File(context.filesDir, "gallery")
+            legacy.listFiles()?.filter { it.isFile && it.extension.lowercase() in setOf("jpg", "jpeg", "png", "webp") }
+                ?.forEach { old ->
+                    val target = File(dir, old.name)
+                    if (!target.exists()) runCatching { copyAtomically(old, target) }
+                }
+            prefs.edit().putBoolean("legacy_private_gallery_imported", true).apply()
+        }
+        return dir
     }
 
     @Synchronized
@@ -51,7 +74,7 @@ object GalleryStorage {
 
     /** Keep a single hidden recovery copy outside the visible gallery. */
     private fun backupDirectory(context: Context): File =
-        File(context.filesDir, "photo_originals").apply {
+        File(File(context.filesDir, "photo_originals"), accountKey()).apply {
             if (!exists() && !mkdirs()) throw IOException("Unable to create the original-photo backup folder")
         }
 
@@ -64,7 +87,7 @@ object GalleryStorage {
     }
 
     fun hasOriginalBackup(context: Context, primary: File): Boolean =
-        File(File(context.filesDir, "photo_originals"), primary.name).isFile
+        File(backupDirectory(context), primary.name).isFile
 
     /** Replace the visible gallery item in-place. Its first original remains hidden for Revert. */
     @Synchronized
@@ -77,7 +100,7 @@ object GalleryStorage {
 
     @Synchronized
     fun revertOriginal(context: Context, primary: File) {
-        val backup = File(File(context.filesDir, "photo_originals"), primary.name)
+        val backup = File(backupDirectory(context), primary.name)
         if (!backup.isFile) throw IOException("No saved original is available for this photo")
         copyAtomically(backup, primary)
         publishToMediaStore(context, primary)
@@ -102,7 +125,11 @@ object GalleryStorage {
     }
 
     fun list(context: Context): List<File> {
-        importLegacyMediaStorePhotos(context)
+        val prefs = context.getSharedPreferences("cfg", Context.MODE_PRIVATE)
+        if (!prefs.getBoolean("legacy_external_gallery_imported", false)) {
+            importLegacyMediaStorePhotos(context)
+            prefs.edit().putBoolean("legacy_external_gallery_imported", true).apply()
+        }
         return directory(context).listFiles { f ->
             f.isFile && f.extension.lowercase() in setOf("jpg", "jpeg", "png", "webp")
         }?.sortedByDescending { it.lastModified() } ?: emptyList()
@@ -118,7 +145,7 @@ object GalleryStorage {
                 MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
                 projection,
                 "${MediaStore.Images.Media.DISPLAY_NAME}=? AND ${MediaStore.Images.Media.RELATIVE_PATH}=?",
-                arrayOf(source.name, "Pictures/AICamera/"),
+                arrayOf(source.name, accountMediaPath()),
                 null
             )?.use { cursor ->
                 if (cursor.moveToFirst()) {
@@ -130,7 +157,7 @@ object GalleryStorage {
                 val values = ContentValues().apply {
                     put(MediaStore.Images.Media.DISPLAY_NAME, source.name)
                     put(MediaStore.Images.Media.MIME_TYPE, mimeFor(source))
-                    put(MediaStore.Images.Media.RELATIVE_PATH, "Pictures/AICamera")
+                    put(MediaStore.Images.Media.RELATIVE_PATH, accountMediaPath().trimEnd('/'))
                     put(MediaStore.Images.Media.IS_PENDING, 1)
                 }
                 uri = resolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values) ?: return
