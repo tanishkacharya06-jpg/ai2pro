@@ -1,4 +1,6 @@
-AI Camera server v1.8
-- Keeps the v1.6 account, pairing, prompt, and enhancement API behavior.
-- Supports idempotent enhancement request IDs so persistent Android queue retries can resume an in-flight job without duplicating it.
-- Android app version 1.7 stores originals before queueing and saves enhanced outputs separately.
+AI Camera server v1.9
+- Adds a public health endpoint used by the Android Settings Online/Offline indicator.
+- Adds automatic anonymous Android device sessions; no website sign-in or pairing code is needed to open the camera.
+- Stores device tokens as server-side hashes and reuses the device profile by installation identifier.
+- Keeps the website's normal login endpoints and existing account database intact.
+- Preserves enhancement request IDs for persistent Android queue retries.
