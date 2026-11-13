@@ -8,7 +8,7 @@ from pydantic import BaseModel
 from PIL import Image, ImageOps
 import tunnel
 
-VERSION = "1.7"
+VERSION = "1.8"
 ENGINE = os.getenv("ENGINE", "echo")                       # chatgpt | openai | echo
 LEGACY_TOKEN = os.getenv("APP_TOKEN")                      # optional: keeps the old Android app working
 ALLOW_SIGNUP = os.getenv("ALLOW_SIGNUP", "1") == "1"       # set 0 to stop new accounts
@@ -17,6 +17,8 @@ HERE = pathlib.Path(__file__).parent
 JOBS = HERE / "jobs"; JOBS.mkdir(exist_ok=True)
 DB = HERE / "data.db"
 jobs = {}
+PAIR_RATE = {}
+PAIR_RATE_LOCK = threading.Lock()
 app = FastAPI()
 
 def db():
@@ -32,7 +34,10 @@ def init():
         CREATE TABLE IF NOT EXISTS sessions(tok TEXT PRIMARY KEY, name TEXT, t REAL);
         CREATE TABLE IF NOT EXISTS prompts(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, text TEXT);
         CREATE TABLE IF NOT EXISTS enhancement_requests(request_id TEXT, user_name TEXT, job_id TEXT,
-            PRIMARY KEY(request_id, user_name));""")
+            PRIMARY KEY(request_id, user_name));
+        CREATE TABLE IF NOT EXISTS pair_codes(code_hash TEXT PRIMARY KEY, user_name TEXT NOT NULL, expires REAL NOT NULL, created REAL NOT NULL);
+        CREATE TABLE IF NOT EXISTS devices(id TEXT PRIMARY KEY, user_name TEXT NOT NULL, token_hash TEXT NOT NULL UNIQUE,
+            name TEXT NOT NULL, created REAL NOT NULL, last_seen REAL NOT NULL, revoked INTEGER DEFAULT 0);""")
         if not c.execute("SELECT 1 FROM users").fetchone():
             salt = secrets.token_hex(8)
             c.execute("INSERT INTO users VALUES('admin',?,?,1)", (salt, hashpw("admin", salt)))
@@ -48,7 +53,14 @@ def user_of(req: Request):
     if tok:
         with db() as c:
             r = c.execute("SELECT u.name, u.admin FROM sessions s JOIN users u ON u.name=s.name WHERE s.tok=?", (tok,)).fetchone()
-        if r: return {"name": r["name"], "admin": r["admin"]}
+            if r:
+                return {"name": r["name"], "admin": r["admin"]}
+            token_hash = hashlib.sha256(tok.encode()).hexdigest()
+            d = c.execute("SELECT id, user_name, name FROM devices WHERE token_hash=? AND revoked=0", (token_hash,)).fetchone()
+            if d:
+                c.execute("UPDATE devices SET last_seen=? WHERE id=?", (time.time(), d["id"]))
+                u = c.execute("SELECT admin FROM users WHERE name=?", (d["user_name"],)).fetchone()
+                return {"name": d["user_name"], "admin": (u["admin"] if u else 0), "device_id": d["id"]}
     raise HTTPException(401, "Please log in")
 
 def admin_of(req: Request):
@@ -119,6 +131,87 @@ def password(p: PwChange, req: Request):
 def pair(req: Request):
     user_of(req)
     return {"code": tunnel.pair_code(), "url": tunnel.URL["url"]}
+
+class DevicePair(BaseModel):
+    code: str
+    device_name: str = "Android device"
+
+def _limit_pair_attempt(req: Request):
+    ip = req.client.host if req.client else "unknown"
+    now = time.time()
+    with PAIR_RATE_LOCK:
+        count, start = PAIR_RATE.get(ip, (0, now))
+        if now - start > 600:
+            count, start = 0, now
+        if count >= 15:
+            raise HTTPException(429, "Too many pairing attempts. Try again in 10 minutes.")
+        PAIR_RATE[ip] = (count + 1, start)
+
+@app.post("/api/device/pair-code")
+def create_device_pair_code(req: Request):
+    u = user_of(req)
+    code = f"{secrets.randbelow(10000):04d}"
+    code_hash = hashlib.sha256(code.encode()).hexdigest()
+    now = time.time()
+    with db() as c:
+        c.execute("DELETE FROM pair_codes WHERE expires < ?", (now,))
+        c.execute("INSERT INTO pair_codes(code_hash,user_name,expires,created) VALUES(?,?,?,?)",
+                  (code_hash, u["name"], now + 300, now))
+    return {"code": code, "expires_in": 300}
+
+@app.post("/api/device/pair/complete")
+def complete_device_pair(p: DevicePair, req: Request):
+    _limit_pair_attempt(req)
+    code = p.code.strip()
+    if len(code) != 4 or not code.isdigit():
+        raise HTTPException(400, "Enter the 4-digit pairing code.")
+    code_hash = hashlib.sha256(code.encode()).hexdigest()
+    now = time.time()
+    with db() as c:
+        row = c.execute("SELECT * FROM pair_codes WHERE code_hash=?", (code_hash,)).fetchone()
+        if not row:
+            raise HTTPException(401, "Pairing code is incorrect or expired.")
+        if row["expires"] < now:
+            c.execute("DELETE FROM pair_codes WHERE code_hash=?", (code_hash,))
+            raise HTTPException(410, "Pairing code expired. Generate a new code on the website.")
+        token = secrets.token_urlsafe(40)
+        device_id = uuid.uuid4().hex
+        name = (p.device_name.strip() or "Android device")[:60]
+        c.execute("INSERT INTO devices(id,user_name,token_hash,name,created,last_seen,revoked) VALUES(?,?,?,?,?,?,0)",
+                  (device_id, row["user_name"], hashlib.sha256(token.encode()).hexdigest(), name, now, now))
+        c.execute("DELETE FROM pair_codes WHERE code_hash=?", (code_hash,))
+    return {"device_token": token, "device_id": device_id, "name": row["user_name"], "device_name": name}
+
+@app.get("/api/device/me")
+def device_me(req: Request):
+    u = user_of(req)
+    return {"name": u["name"], "device_id": u.get("device_id"), "connected": True}
+
+@app.get("/api/devices")
+def list_devices(req: Request):
+    u = user_of(req)
+    with db() as c:
+        rows = c.execute("SELECT id,name,created,last_seen FROM devices WHERE user_name=? AND revoked=0 ORDER BY created DESC",
+                         (u["name"],)).fetchall()
+    return [dict(r) for r in rows]
+
+@app.post("/api/device/disconnect")
+def disconnect_device(req: Request):
+    tok = (req.headers.get("authorization") or "").replace("Bearer ", "").strip()
+    if tok and not (LEGACY_TOKEN and tok == LEGACY_TOKEN):
+        token_hash = hashlib.sha256(tok.encode()).hexdigest()
+        with db() as c:
+            c.execute("UPDATE devices SET revoked=1 WHERE token_hash=?", (token_hash,))
+    return {"ok": True}
+
+@app.post("/api/devices/{device_id}/revoke")
+def revoke_device(device_id: str, req: Request):
+    u = user_of(req)
+    with db() as c:
+        cur = c.execute("UPDATE devices SET revoked=1 WHERE id=? AND user_name=?", (device_id, u["name"]))
+        if cur.rowcount == 0:
+            raise HTTPException(404, "Device not found")
+    return {"ok": True}
 
 @app.get("/api/prompts")
 def prompts(req: Request):
