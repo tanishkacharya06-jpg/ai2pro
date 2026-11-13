@@ -770,6 +770,7 @@ fun MainScreen() {
     var serverOnline by remember { mutableStateOf<Boolean?>(null) }
     var serverStatus by remember { mutableStateOf("Checking server…") }
     var checkingServer by remember { mutableStateOf(false) }
+    var serverAddress by remember { mutableStateOf(Api.link) }
     var timerSeconds by remember { mutableIntStateOf(Api.prefs.getInt("camera_timer", 0)) }
     var gridMode by remember { mutableIntStateOf(Api.prefs.getInt("camera_grid", 0)) }
 
@@ -1078,6 +1079,16 @@ fun MainScreen() {
             serverOnline = serverOnline,
             checkingServer = checkingServer,
             onRefreshServer = { refreshServer() },
+            serverAddress = serverAddress,
+            onServerAddressChange = { serverAddress = it },
+            onSaveServerAddress = {
+                Api.link = serverAddress.trim()
+                Api.base = ""
+                Api.sid = ""
+                Api.deviceId = ""
+                Api.user = ""
+                refreshServer()
+            },
             timerSeconds = timerSeconds,
             gridMode = gridMode,
             onTimerChange = {
@@ -1100,12 +1111,14 @@ private fun CameraSettingsDialog(
     serverOnline: Boolean?,
     checkingServer: Boolean,
     onRefreshServer: () -> Unit,
+    serverAddress: String,
+    onServerAddressChange: (String) -> Unit,
+    onSaveServerAddress: () -> Unit,
     timerSeconds: Int,
     gridMode: Int,
     onTimerChange: (Int) -> Unit,
     onGridChange: (Int) -> Unit,
-    onClose: () -> Unit,
-    onDisconnect: () -> Unit
+    onClose: () -> Unit
 ) {
     AlertDialog(
         onDismissRequest = onClose,
@@ -1114,6 +1127,17 @@ private fun CameraSettingsDialog(
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text("Device profile", style = MaterialTheme.typography.labelMedium, color = Color.Gray)
                 Text(accountName.ifBlank { "Camera-only mode · not connected yet" }, style = MaterialTheme.typography.titleMedium)
+                Text("Server URL or discovery code", style = MaterialTheme.typography.labelMedium, color = Color.Gray)
+                OutlinedTextField(
+                    value = serverAddress,
+                    onValueChange = onServerAddressChange,
+                    singleLine = true,
+                    placeholder = { Text("https://your-server.example.com") },
+                    modifier = Modifier.fillMaxWidth()
+                )
+                TextButton(onClick = onSaveServerAddress, enabled = serverAddress.isNotBlank()) {
+                    Text("Save server address")
+                }
                 Text("Server status", style = MaterialTheme.typography.labelMedium, color = Color.Gray)
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     val statusColor = when (serverOnline) {
