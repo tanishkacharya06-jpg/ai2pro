@@ -1,5 +1,7 @@
 package com.example.aicamera
 
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.content.ContentUris
 import android.content.ContentValues
 import android.content.Context
@@ -94,7 +96,7 @@ object GalleryStorage {
     fun replacePrimary(context: Context, primary: File, replacement: File) {
         if (!primary.isFile || !replacement.isFile) throw IOException("The photo to replace is missing")
         ensureOriginalBackup(context, primary)
-        copyAtomically(replacement, primary)
+        copyImageAtomically(replacement, primary)
         publishToMediaStore(context, primary)
     }
 
@@ -104,6 +106,33 @@ object GalleryStorage {
         if (!backup.isFile) throw IOException("No saved original is available for this photo")
         copyAtomically(backup, primary)
         publishToMediaStore(context, primary)
+    }
+
+    /** Enhancement results are PNG; convert to the primary file's extension before replacing. */
+    private fun copyImageAtomically(source: File, target: File) {
+        val bitmap = BitmapFactory.decodeFile(source.path)
+            ?: throw IOException("The enhanced image could not be decoded")
+        val format = when (target.extension.lowercase()) {
+            "png" -> Bitmap.CompressFormat.PNG
+            "webp" -> Bitmap.CompressFormat.WEBP_LOSSY
+            else -> Bitmap.CompressFormat.JPEG
+        }
+        val temp = File(target.parentFile, ".${target.name}.${UUID.randomUUID()}.tmp")
+        try {
+            FileOutputStream(temp).use { output ->
+                if (!bitmap.compress(format, 95, output)) throw IOException("Unable to encode enhanced image")
+                output.flush()
+                output.fd.sync()
+            }
+            Files.move(temp.toPath(), target.toPath(),
+                StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE)
+        } catch (e: Exception) {
+            temp.delete()
+            if (e is IOException) throw e
+            throw IOException("Unable to safely replace the photo", e)
+        } finally {
+            bitmap.recycle()
+        }
     }
 
     private fun copyAtomically(source: File, target: File) {
