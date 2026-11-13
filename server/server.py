@@ -17,6 +17,7 @@ HERE = pathlib.Path(__file__).parent
 DATA_DIR = pathlib.Path(os.getenv("DATA_DIR", str(HERE))).expanduser()
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 JOBS = DATA_DIR / "jobs"; JOBS.mkdir(parents=True, exist_ok=True)
+CLOUD_DIR = DATA_DIR / "cloud_gallery"; CLOUD_DIR.mkdir(parents=True, exist_ok=True)
 DB = DATA_DIR / "data.db"
 jobs = {}
 PAIR_RATE = {}
@@ -39,7 +40,11 @@ def init():
             PRIMARY KEY(request_id, user_name));
         CREATE TABLE IF NOT EXISTS pair_codes(code_hash TEXT PRIMARY KEY, user_name TEXT NOT NULL, expires REAL NOT NULL, created REAL NOT NULL);
         CREATE TABLE IF NOT EXISTS devices(id TEXT PRIMARY KEY, user_name TEXT NOT NULL, token_hash TEXT NOT NULL UNIQUE,
-            name TEXT NOT NULL, created REAL NOT NULL, last_seen REAL NOT NULL, revoked INTEGER DEFAULT 0);""")
+            name TEXT NOT NULL, created REAL NOT NULL, last_seen REAL NOT NULL, revoked INTEGER DEFAULT 0);
+        CREATE TABLE IF NOT EXISTS account_profiles(user_name TEXT PRIMARY KEY, code_hash TEXT NOT NULL UNIQUE,
+            installation_hash TEXT NOT NULL UNIQUE, created REAL NOT NULL);
+        CREATE TABLE IF NOT EXISTS cloud_gallery(user_name TEXT NOT NULL, name TEXT NOT NULL, file_path TEXT NOT NULL,
+            modified INTEGER NOT NULL, updated REAL NOT NULL, size INTEGER NOT NULL, PRIMARY KEY(user_name,name));""")
         device_columns = {row["name"] for row in c.execute("PRAGMA table_info(devices)").fetchall()}
         if "install_hash" not in device_columns:
             c.execute("ALTER TABLE devices ADD COLUMN install_hash TEXT")
@@ -302,6 +307,176 @@ def version():
 @app.get("/health")
 def health():
     return {"status": "online", "version": VERSION, "engine": ENGINE, "timestamp": int(time.time())}
+
+
+
+class ProfileDeviceIn(BaseModel):
+    installation_id: str
+    device_name: str = "AI Camera Android"
+
+class AccountCodeLogin(BaseModel):
+    code: str
+    installation_id: str = ""
+    device_name: str = "AI Camera Android"
+
+def _fresh_account_code(c):
+    for _ in range(10000):
+        code = f"{secrets.randbelow(10000):04d}"
+        digest = hashlib.sha256(code.encode()).hexdigest()
+        if not c.execute("SELECT 1 FROM account_profiles WHERE code_hash=?", (digest,)).fetchone():
+            return code, digest
+    raise HTTPException(503, "All 4-digit account codes are currently in use.")
+
+def _limit_account_code_login(req: Request):
+    ip = req.client.host if req.client else "unknown"
+    now = time.time()
+    key = "account-code:" + ip
+    with PAIR_RATE_LOCK:
+        count, start = PAIR_RATE.get(key, (0, now))
+        if now - start > 600:
+            count, start = 0, now
+        if count >= 8:
+            raise HTTPException(429, "Too many code attempts. Try again in 10 minutes.")
+        PAIR_RATE[key] = (count + 1, start)
+
+@app.post("/api/device/profile")
+def create_or_restore_device_profile(p: ProfileDeviceIn, req: Request):
+    installation_id = p.installation_id.strip()
+    if len(installation_id) < 20 or len(installation_id) > 128 or not all(ch.isalnum() or ch in "-_" for ch in installation_id):
+        raise HTTPException(400, "Invalid installation identifier")
+    install_hash = hashlib.sha256(installation_id.encode()).hexdigest()
+    now = time.time()
+    token = secrets.token_urlsafe(48)
+    token_hash = hashlib.sha256(token.encode()).hexdigest()
+    device_name = (p.device_name.strip() or "AI Camera Android")[:60]
+    generated_code = ""
+    with db() as c:
+        c.execute("BEGIN IMMEDIATE")
+        profile = c.execute("SELECT user_name FROM account_profiles WHERE installation_hash=?", (install_hash,)).fetchone()
+        if profile:
+            account_name = profile["user_name"]
+        else:
+            old_device = c.execute("SELECT id,user_name FROM devices WHERE install_hash=? ORDER BY created DESC LIMIT 1",
+                                   (install_hash,)).fetchone()
+            next_number = c.execute("SELECT COALESCE(MAX(CAST(SUBSTR(name,5) AS INTEGER)),0)+1 FROM users WHERE name GLOB 'USER[0-9]*'").fetchone()[0]
+            account_name = f"USER{next_number}"
+            salt = secrets.token_hex(16)
+            internal_password = secrets.token_urlsafe(32)
+            c.execute("INSERT INTO users(name,salt,pw,admin) VALUES(?,?,?,0)",
+                      (account_name, salt, hashpw(internal_password, salt)))
+            generated_code, code_hash = _fresh_account_code(c)
+            c.execute("INSERT INTO account_profiles(user_name,code_hash,installation_hash,created) VALUES(?,?,?,?)",
+                      (account_name, code_hash, install_hash, now))
+            if old_device and old_device["user_name"].startswith("guest_"):
+                c.execute("UPDATE devices SET user_name=? WHERE id=?", (account_name, old_device["id"]))
+        old = c.execute("SELECT id FROM devices WHERE install_hash=? AND user_name=? ORDER BY created DESC LIMIT 1",
+                        (install_hash, account_name)).fetchone()
+        if old:
+            device_id = old["id"]
+            c.execute("UPDATE devices SET token_hash=?,name=?,last_seen=?,revoked=0 WHERE id=?",
+                      (token_hash, device_name, now, device_id))
+        else:
+            device_id = uuid.uuid4().hex
+            c.execute("INSERT INTO devices(id,user_name,token_hash,name,created,last_seen,revoked,install_hash) VALUES(?,?,?,?,?,?,0,?)",
+                      (device_id, account_name, token_hash, device_name, now, now, install_hash))
+    return {"device_token": token, "device_id": device_id, "name": account_name, "code": generated_code}
+
+@app.post("/api/device/login-code")
+def login_device_with_account_code(p: AccountCodeLogin, req: Request):
+    _limit_account_code_login(req)
+    code = p.code.strip()
+    if len(code) != 4 or not code.isdigit():
+        raise HTTPException(400, "Enter your 4-digit account code.")
+    digest = hashlib.sha256(code.encode()).hexdigest()
+    with db() as c:
+        profile = c.execute("SELECT user_name FROM account_profiles WHERE code_hash=?", (digest,)).fetchone()
+        if not profile:
+            raise HTTPException(401, "That account code is incorrect.")
+        account_name = profile["user_name"]
+        token = secrets.token_urlsafe(48)
+        token_hash = hashlib.sha256(token.encode()).hexdigest()
+        device_id = uuid.uuid4().hex
+        now = time.time()
+        device_name = (p.device_name.strip() or "AI Camera Android")[:60]
+        raw_install = p.installation_id.strip()
+        if raw_install:
+            if len(raw_install) < 20 or len(raw_install) > 128 or not all(ch.isalnum() or ch in "-_" for ch in raw_install):
+                raise HTTPException(400, "Invalid installation identifier")
+            install_hash = hashlib.sha256(raw_install.encode()).hexdigest()
+            old = c.execute("SELECT id FROM devices WHERE install_hash=? AND user_name=? ORDER BY created DESC LIMIT 1",
+                            (install_hash, account_name)).fetchone()
+            if old:
+                device_id = old["id"]
+                c.execute("UPDATE devices SET token_hash=?,name=?,last_seen=?,revoked=0 WHERE id=?",
+                          (token_hash, device_name, now, device_id))
+            else:
+                c.execute("INSERT INTO devices(id,user_name,token_hash,name,created,last_seen,revoked,install_hash) VALUES(?,?,?,?,?,?,0,?)",
+                          (device_id, account_name, token_hash, device_name, now, now, install_hash))
+        else:
+            c.execute("INSERT INTO devices(id,user_name,token_hash,name,created,last_seen,revoked) VALUES(?,?,?,?,?,?,0)",
+                      (device_id, account_name, token_hash, device_name, now, now))
+    return {"device_token": token, "device_id": device_id, "name": account_name}
+
+@app.post("/api/device/code/regenerate")
+def regenerate_account_code(req: Request):
+    u = user_of(req)
+    with db() as c:
+        row = c.execute("SELECT user_name FROM account_profiles WHERE user_name=?", (u["name"],)).fetchone()
+        if not row:
+            raise HTTPException(404, "This account does not have an app account code.")
+        code, digest = _fresh_account_code(c)
+        c.execute("UPDATE account_profiles SET code_hash=? WHERE user_name=?", (digest, u["name"]))
+    return {"code": code}
+
+@app.get("/api/gallery")
+def cloud_gallery_index(req: Request):
+    u = user_of(req)
+    with db() as c:
+        rows = c.execute("SELECT name,modified,updated,size FROM cloud_gallery WHERE user_name=? ORDER BY modified DESC",
+                         (u["name"],)).fetchall()
+    return [dict(row) for row in rows]
+
+@app.post("/api/gallery/upload")
+async def cloud_gallery_upload(req: Request, photo: UploadFile, name: str = Form(...), modified: int = Form(0)):
+    u = user_of(req)
+    safe_name = pathlib.PurePath(name).name
+    if not safe_name or safe_name != name or len(safe_name) > 180:
+        raise HTTPException(400, "Invalid photo filename")
+    suffix = pathlib.Path(safe_name).suffix.lower()
+    if suffix not in (".jpg", ".jpeg", ".png", ".webp"):
+        raise HTTPException(400, "Only image files can be backed up")
+    data = await photo.read()
+    if not data or len(data) > 40 * 1024 * 1024:
+        raise HTTPException(413, "Photo is empty or larger than 40 MB")
+    account_dir = CLOUD_DIR / hashlib.sha256(u["name"].lower().encode()).hexdigest()
+    account_dir.mkdir(parents=True, exist_ok=True)
+    with db() as c:
+        previous = c.execute("SELECT file_path FROM cloud_gallery WHERE user_name=? AND name=?",
+                             (u["name"], safe_name)).fetchone()
+        path = pathlib.Path(previous["file_path"]) if previous else account_dir / (uuid.uuid4().hex + suffix)
+        temp = path.with_suffix(path.suffix + ".tmp")
+        temp.write_bytes(data)
+        os.replace(temp, path)
+        timestamp = modified if modified > 0 else int(time.time() * 1000)
+        c.execute("INSERT INTO cloud_gallery(user_name,name,file_path,modified,updated,size) VALUES(?,?,?,?,?,?) "
+                  "ON CONFLICT(user_name,name) DO UPDATE SET file_path=excluded.file_path,modified=excluded.modified,updated=excluded.updated,size=excluded.size",
+                  (u["name"], safe_name, str(path), timestamp, time.time(), len(data)))
+    return {"ok": True, "name": safe_name, "modified": timestamp, "size": len(data)}
+
+@app.get("/api/gallery/{photo_name}")
+def cloud_gallery_download(photo_name: str, req: Request):
+    u = user_of(req)
+    safe_name = pathlib.PurePath(photo_name).name
+    if not safe_name or safe_name != photo_name:
+        raise HTTPException(400, "Invalid photo filename")
+    with db() as c:
+        row = c.execute("SELECT file_path FROM cloud_gallery WHERE user_name=? AND name=?",
+                        (u["name"], safe_name)).fetchone()
+    if not row or not pathlib.Path(row["file_path"]).is_file():
+        raise HTTPException(404, "Photo not found")
+    mime = "image/png" if safe_name.lower().endswith(".png") else "image/webp" if safe_name.lower().endswith(".webp") else "image/jpeg"
+    return FileResponse(row["file_path"], media_type=mime, filename=safe_name)
+
 
 class GuestDeviceIn(BaseModel):
     installation_id: str
