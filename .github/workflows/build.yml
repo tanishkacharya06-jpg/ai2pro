@@ -21,6 +21,8 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: "8.7"
+      - name: Validate server Python syntax
+        run: python -m py_compile server/server.py server/tunnel.py server/chatgpt.py
       - name: Build v1.9 APK
         working-directory: android-project
         run: gradle assembleDebug --no-daemon
