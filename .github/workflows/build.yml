@@ -23,7 +23,8 @@ jobs:
           gradle-version: "8.7"
       - name: Extract v1.7 Android project
         run: |
-          base64 --decode AICamera-v1.7-source.tar.xz.b64 > /tmp/aicamera-v1.7.tar.xz
+          cat AICamera-v1.7-source.tar.xz.b64.part-* > /tmp/aicamera-v1.7.tar.xz.b64
+          base64 --decode /tmp/aicamera-v1.7.tar.xz.b64 > /tmp/aicamera-v1.7.tar.xz
           mkdir -p source-unpacked
           tar -xJf /tmp/aicamera-v1.7.tar.xz -C source-unpacked
           test -f source-unpacked/android-project/app/src/main/java/com/example/aicamera/EnhancementQueue.kt
