@@ -1,4 +1,4 @@
-name: Build AI Camera v1.6 APK
+name: Build AI Camera v1.7 APK
 on:
   push:
     branches: [main]
@@ -21,33 +21,30 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: "8.7"
-      - name: Extract original v1.6 Android project
+      - name: Extract v1.7 Android source
         run: |
-          base64 --decode AICamera-v1.6-source.zip.b64 > /tmp/aicamera-v1.6.zip
-          unzip -q /tmp/aicamera-v1.6.zip -d source-unpacked
-          test -f source-unpacked/android-project/app/src/main/java/com/example/aicamera/MainActivity.kt
-          grep -q 'androidx.compose.ui.viewinterop.AndroidView' source-unpacked/android-project/app/src/main/java/com/example/aicamera/MainActivity.kt || grep -q 'import androidx.compose.ui.viewinterop.AndroidView' source-unpacked/android-project/app/src/main/java/com/example/aicamera/MainActivity.kt
-      - name: Export extracted Android source for upgrade
-        run: |
-          cd source-unpacked
-          zip -qr ../AICamera-v1.6-android-source.zip android-project
-      - uses: actions/upload-artifact@v4
-        with:
-          name: AICamera-v1.6-android-source
-          path: AICamera-v1.6-android-source.zip
-          if-no-files-found: error
-          retention-days: 7
-      - name: Build original v1.6 project
+          base64 --decode AICamera-v1.7-source.zip.b64 > /tmp/aicamera-v1.7.zip
+          unzip -q /tmp/aicamera-v1.7.zip -d source-unpacked
+          test -f source-unpacked/android-project/app/src/main/java/com/example/aicamera/EnhancementQueue.kt
+          grep -q 'versionName = "1.7"' source-unpacked/android-project/app/build.gradle.kts
+      - name: Build APK
         working-directory: source-unpacked/android-project
-        run: gradle assembleDebug --no-daemon
-      - name: Verify and stage APK
+        run: gradle assembleDebug --no-daemon --stacktrace
+      - name: Verify APK
         run: |
           test -s source-unpacked/android-project/app/build/outputs/apk/debug/app-debug.apk
           "$ANDROID_HOME/build-tools/34.0.0/apksigner" verify --verbose source-unpacked/android-project/app/build/outputs/apk/debug/app-debug.apk
-          cp source-unpacked/android-project/app/build/outputs/apk/debug/app-debug.apk AICamera-v1.6-debug.apk
+          cp source-unpacked/android-project/app/build/outputs/apk/debug/app-debug.apk AICamera-v1.7-debug.apk
+          cp /tmp/aicamera-v1.7.zip AICamera-v1.7-android-source.zip
       - uses: actions/upload-artifact@v4
         with:
-          name: AICamera-v1.6-apk
-          path: AICamera-v1.6-debug.apk
+          name: AICamera-v1.7-apk
+          path: AICamera-v1.7-debug.apk
+          if-no-files-found: error
+          retention-days: 30
+      - uses: actions/upload-artifact@v4
+        with:
+          name: AICamera-v1.7-source
+          path: AICamera-v1.7-android-source.zip
           if-no-files-found: error
           retention-days: 30
