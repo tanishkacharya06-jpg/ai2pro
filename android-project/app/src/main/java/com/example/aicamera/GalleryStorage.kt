@@ -17,8 +17,8 @@ import java.security.MessageDigest
 /** App-private gallery is the source of truth; MediaStore copies remain visible in the phone gallery. */
 object GalleryStorage {
     private fun accountKey(): String {
-        val account = Api.user.trim().lowercase().ifBlank { "unlinked-account" }
-        val bytes = MessageDigest.getInstance("SHA-256").digest(account.toByteArray())
+        // Device identity exists before network access, so offline captures remain in this gallery.
+        val bytes = MessageDigest.getInstance("SHA-256").digest(Api.installationId.toByteArray())
         return bytes.joinToString("") { "%02x".format(it) }.take(24)
     }
 
