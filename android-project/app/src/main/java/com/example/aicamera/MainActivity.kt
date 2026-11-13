@@ -101,6 +101,8 @@ class ApiHttpException(val statusCode: Int, message: String) : IOException(messa
 object Api {
     private val http = OkHttpClient.Builder().connectTimeout(30, TimeUnit.SECONDS)
         .readTimeout(180, TimeUnit.SECONDS).writeTimeout(180, TimeUnit.SECONDS).build()
+    private val quickHttp = OkHttpClient.Builder().connectTimeout(6, TimeUnit.SECONDS)
+        .readTimeout(8, TimeUnit.SECONDS).writeTimeout(8, TimeUnit.SECONDS).build()
     lateinit var prefs: SharedPreferences
     private lateinit var securePrefs: SharedPreferences
 
@@ -134,6 +136,14 @@ object Api {
     var deviceId: String
         get() = securePrefs.getString("device_id", "") ?: ""
         set(v) { securePrefs.edit().putString("device_id", v).apply() }
+    var installationId: String
+        get() {
+            val existing = securePrefs.getString("installation_id", null)
+            if (!existing.isNullOrBlank()) return existing
+            val created = UUID.randomUUID().toString()
+            securePrefs.edit().putString("installation_id", created).commit()
+            return created
+        }
     var user: String
         get() = rd("user")
         set(v) = wr("user", v)
@@ -157,7 +167,7 @@ object Api {
             base = l.trimEnd('/')
         } else if (l.isNotEmpty()) {
             try {
-                val text = http.newCall(Request.Builder().url("https://ntfy.sh/$l/json?poll=1&since=all").build())
+                val text = quickHttp.newCall(Request.Builder().url("https://ntfy.sh/$l/json?poll=1&since=all").build())
                     .execute().use { it.body!!.string() }
                 var latest = ""
                 for (line in text.lines()) {
@@ -195,6 +205,43 @@ object Api {
             deviceId = json.optString("device_id")
             user = json.getString("name")
             user
+        }
+    }
+
+    /** Creates or restores an anonymous device profile; no website login or pairing is needed. */
+    suspend fun connectGuest(): String = withContext(Dispatchers.IO) {
+        resolve()
+        if (sid.isNotBlank()) {
+            try { return@withContext validate() } catch (_: Exception) {
+                sid = ""
+                deviceId = ""
+            }
+        }
+        val body = JSONObject()
+            .put("installation_id", installationId)
+            .put("device_name", "AI Camera Android")
+            .toString().toRequestBody("application/json".toMediaType())
+        quickHttp.newCall(Request.Builder().url("$base/api/device/guest").post(body).build()).execute().use { r ->
+            if (!r.isSuccessful) throw ApiHttpException(r.code, detail(r))
+            val json = JSONObject(r.body!!.string())
+            sid = json.getString("device_token")
+            deviceId = json.optString("device_id")
+            user = json.getString("name")
+            user
+        }
+    }
+
+    suspend fun checkServerStatus(): Pair<Boolean, String> = withContext(Dispatchers.IO) {
+        try {
+            val server = resolve()
+            quickHttp.newCall(Request.Builder().url("$server/health").get().build()).execute().use { r ->
+                if (!r.isSuccessful) throw IOException("Server returned HTTP ${r.code}")
+                val json = JSONObject(r.body!!.string())
+                val version = json.optString("version", "unknown")
+                true to "Online · v$version"
+            }
+        } catch (e: Exception) {
+            false to "Offline"
         }
     }
 
