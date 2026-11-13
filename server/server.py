@@ -14,8 +14,10 @@ LEGACY_TOKEN = os.getenv("APP_TOKEN")                      # optional: keeps the
 ALLOW_SIGNUP = os.getenv("ALLOW_SIGNUP", "1") == "1"       # set 0 to stop new accounts
 TTL = 900
 HERE = pathlib.Path(__file__).parent
-JOBS = HERE / "jobs"; JOBS.mkdir(exist_ok=True)
-DB = HERE / "data.db"
+DATA_DIR = pathlib.Path(os.getenv("DATA_DIR", str(HERE))).expanduser()
+DATA_DIR.mkdir(parents=True, exist_ok=True)
+JOBS = DATA_DIR / "jobs"; JOBS.mkdir(parents=True, exist_ok=True)
+DB = DATA_DIR / "data.db"
 jobs = {}
 PAIR_RATE = {}
 PAIR_RATE_LOCK = threading.Lock()
