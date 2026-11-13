@@ -17,6 +17,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.camera.core.Camera
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageCapture
+import androidx.camera.core.FocusMeteringAction
 import androidx.camera.core.ImageCaptureException
 import androidx.camera.core.Preview
 import androidx.camera.lifecycle.ProcessCameraProvider
@@ -24,6 +25,7 @@ import androidx.camera.view.PreviewView
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -63,6 +65,8 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.core.content.ContextCompat
 import androidx.exifinterface.media.ExifInterface
+import androidx.security.crypto.EncryptedSharedPreferences
+import androidx.security.crypto.MasterKey
 import androidx.lifecycle.LifecycleOwner
 import androidx.work.WorkInfo
 import androidx.work.WorkManager
@@ -98,9 +102,22 @@ object Api {
     private val http = OkHttpClient.Builder().connectTimeout(30, TimeUnit.SECONDS)
         .readTimeout(180, TimeUnit.SECONDS).writeTimeout(180, TimeUnit.SECONDS).build()
     lateinit var prefs: SharedPreferences
+    private lateinit var securePrefs: SharedPreferences
 
     fun initialize(context: Context) {
-        prefs = context.applicationContext.getSharedPreferences("cfg", Context.MODE_PRIVATE)
+        val appContext = context.applicationContext
+        prefs = appContext.getSharedPreferences("cfg", Context.MODE_PRIVATE)
+        val masterKey = MasterKey.Builder(appContext).setKeyScheme(MasterKey.KeyScheme.AES256_GCM).build()
+        securePrefs = EncryptedSharedPreferences.create(
+            "secure_auth", appContext, masterKey,
+            EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
+            EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
+        )
+        val legacySid = prefs.getString("sid", null)
+        if (securePrefs.getString("sid", null).isNullOrEmpty() && !legacySid.isNullOrEmpty()) {
+            securePrefs.edit().putString("sid", legacySid).apply()
+        }
+        prefs.edit().remove("sid").apply()
     }
 
     private fun rd(k: String): String = prefs.getString(k, "") ?: ""
@@ -112,8 +129,11 @@ object Api {
         get() = rd("base")
         set(v) = wr("base", v)
     var sid: String
-        get() = rd("sid")
-        set(v) = wr("sid", v)
+        get() = securePrefs.getString("sid", "") ?: ""
+        set(v) { securePrefs.edit().putString("sid", v).apply() }
+    var deviceId: String
+        get() = securePrefs.getString("device_id", "") ?: ""
+        set(v) { securePrefs.edit().putString("device_id", v).apply() }
     var user: String
         get() = rd("user")
         set(v) = wr("user", v)
@@ -162,6 +182,46 @@ object Api {
             user = JSONObject(r.body!!.string()).getString("name")
             user
         }
+    }
+
+    suspend fun pair(code: String, deviceName: String = "Android device"): String = withContext(Dispatchers.IO) {
+        resolve()
+        val body = JSONObject().put("code", code).put("device_name", deviceName)
+            .toString().toRequestBody("application/json".toMediaType())
+        http.newCall(Request.Builder().url("$base/api/device/pair/complete").post(body).build()).execute().use { r ->
+            if (!r.isSuccessful) throw ApiHttpException(r.code, detail(r))
+            val json = JSONObject(r.body!!.string())
+            sid = json.getString("device_token")
+            deviceId = json.optString("device_id")
+            user = json.getString("name")
+            user
+        }
+    }
+
+    suspend fun validate(): String = withContext(Dispatchers.IO) {
+        if (sid.isBlank()) throw AuthExpired()
+        http.newCall(rq("/api/device/me").get().build()).execute().use { r ->
+            check(r)
+            val json = JSONObject(r.body!!.string())
+            user = json.getString("name")
+            deviceId = json.optString("device_id")
+            user
+        }
+    }
+
+    suspend fun disconnect() = withContext(Dispatchers.IO) {
+        val token = sid
+        if (token.isNotBlank() && base.isNotBlank()) {
+            runCatching {
+                http.newCall(Request.Builder().url("$base/api/device/disconnect")
+                    .header("Authorization", "Bearer $token")
+                    .post("{}".toRequestBody("application/json".toMediaType())).build())
+                    .execute().use { }
+            }
+        }
+        sid = ""
+        deviceId = ""
+        user = ""
     }
 
     suspend fun prompts(): List<Pair<Int, String>> = withContext(Dispatchers.IO) {
@@ -268,49 +328,75 @@ class MainActivity : ComponentActivity() {
 
 @Composable
 fun Root() {
-    var user by remember { mutableStateOf(if (Api.sid.isNotEmpty()) Api.user else "") }
-    if (user.isEmpty()) LoginScreen { user = it }
-    else MainScreen {
-        Api.sid = ""
-        Api.user = ""
-        user = ""
+    var user by remember { mutableStateOf("") }
+    var checking by remember { mutableStateOf(true) }
+    val scope = rememberCoroutineScope()
+    LaunchedEffect(Unit) {
+        if (Api.sid.isNotBlank()) {
+            try { user = Api.validate() }
+            catch (_: Exception) { Api.sid = ""; Api.deviceId = ""; Api.user = "" }
+        }
+        checking = false
+    }
+    when {
+        checking -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
+        user.isBlank() -> PairingScreen { user = it }
+        else -> MainScreen {
+            scope.launch {
+                Api.disconnect()
+                user = ""
+            }
+        }
     }
 }
 
 @Composable
-fun LoginScreen(onDone: (String) -> Unit) {
-    var link by remember { mutableStateOf(Api.link) }
-    var name by remember { mutableStateOf("") }
-    var pass by remember { mutableStateOf("") }
+fun PairingScreen(onDone: (String) -> Unit) {
+    var serverCode by remember { mutableStateOf(Api.link) }
+    var pairCode by remember { mutableStateOf("") }
     var msg by remember { mutableStateOf("") }
     var busy by remember { mutableStateOf(false) }
-    var advanced by remember { mutableStateOf(false) }
+    var showServer by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
-    fun go(mode: String) {
-        busy = true
-        msg = ""
-        Api.link = link.trim()
-        scope.launch {
-            try { onDone(Api.auth(mode, name.trim(), pass)) }
-            catch (e: Exception) { msg = e.message ?: "Failed" }
-            busy = false
-        }
-    }
     Column(Modifier.fillMaxSize().padding(28.dp), verticalArrangement = Arrangement.Center) {
-        Text("AI Camera", style = MaterialTheme.typography.headlineLarge)
-        Text("Sign in to continue", color = Color.Gray)
-        Spacer(Modifier.height(20.dp))
-        if (advanced) OutlinedTextField(link, { link = it }, label = { Text("Server code or URL") }, singleLine = true, modifier = Modifier.fillMaxWidth())
-        OutlinedTextField(name, { name = it }, label = { Text("Username") }, singleLine = true, modifier = Modifier.fillMaxWidth())
-        OutlinedTextField(pass, { pass = it }, label = { Text("Password") }, singleLine = true,
-            visualTransformation = PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth())
-        if (msg.isNotEmpty()) Text(msg, color = Color(0xFFFF6B81), modifier = Modifier.padding(top = 8.dp))
-        Spacer(Modifier.height(16.dp))
-        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            Button(enabled = !busy, onClick = { go("login") }) { Text(if (busy) "Connecting…" else "Log in") }
-            OutlinedButton(enabled = !busy, onClick = { go("signup") }) { Text("Create account") }
+        Text("AI Camera", style = MaterialTheme.typography.headlineLarge, color = Color.White)
+        Text("Connect your phone to your website account", color = Color.LightGray)
+        Spacer(Modifier.height(18.dp))
+        Text("On the website, sign in as usual and choose “Phone app” to generate a one-time 4-digit code. Enter it below.",
+            color = Color.LightGray)
+        Spacer(Modifier.height(18.dp))
+        OutlinedTextField(
+            value = pairCode,
+            onValueChange = { pairCode = it.filter(Char::isDigit).take(4) },
+            label = { Text("4-digit pairing code") },
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth()
+        )
+        if (showServer) {
+            Spacer(Modifier.height(10.dp))
+            OutlinedTextField(
+                value = serverCode, onValueChange = { serverCode = it.trim() },
+                label = { Text("Server connection code or URL") }, singleLine = true,
+                modifier = Modifier.fillMaxWidth()
+            )
         }
-        TextButton(onClick = { advanced = !advanced }) { Text(if (advanced) "Hide server settings" else "Server settings") }
+        if (msg.isNotBlank()) Text(msg, color = Color(0xFFFF8797), modifier = Modifier.padding(top = 10.dp))
+        Spacer(Modifier.height(16.dp))
+        Button(enabled = !busy && pairCode.length == 4, onClick = {
+            busy = true
+            msg = ""
+            Api.link = serverCode.trim()
+            scope.launch {
+                try { onDone(Api.pair(pairCode)) }
+                catch (e: Exception) { msg = e.message ?: "Pairing failed" }
+                finally { busy = false }
+            }
+        }, modifier = Modifier.fillMaxWidth()) {
+            Text(if (busy) "Connecting…" else "Connect account")
+        }
+        TextButton(onClick = { showServer = !showServer }) {
+            Text(if (showServer) "Hide server settings" else "Server settings")
+        }
     }
 }
 
