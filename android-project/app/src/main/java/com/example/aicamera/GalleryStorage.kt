@@ -164,6 +164,20 @@ object GalleryStorage {
         }?.sortedByDescending { it.lastModified() } ?: emptyList()
     }
 
+    @Synchronized
+    fun importRemote(context: Context, source: File, name: String, modified: Long): File {
+        val safeName = File(name).name
+        if (!source.isFile || safeName.isBlank() || safeName != name) throw IOException("Invalid cloud photo")
+        val dir = directory(context)
+        val target = File(dir, safeName)
+        if (!target.isFile || modified > target.lastModified() + 1000L) {
+            copyAtomically(source, target)
+            if (modified > 0L) target.setLastModified(modified)
+            publishToMediaStore(context, target)
+        }
+        return target
+    }
+
     private fun publishToMediaStore(context: Context, source: File) {
         val resolver = context.contentResolver
         val projection = arrayOf(MediaStore.Images.Media._ID)
