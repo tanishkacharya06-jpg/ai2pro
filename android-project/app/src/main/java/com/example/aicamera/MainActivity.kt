@@ -212,10 +212,14 @@ object Api {
     suspend fun connectGuest(): String = withContext(Dispatchers.IO) {
         if (base.isBlank()) resolve()
         if (sid.isNotBlank()) {
-            try { return@withContext validate() } catch (_: Exception) {
-                sid = ""
-                deviceId = ""
-            }
+            try {
+                val existingName = validate()
+                // Do not keep a legacy website login attached to the camera-only app.
+                if (existingName.startsWith("guest_")) return@withContext existingName
+            } catch (_: Exception) { }
+            sid = ""
+            deviceId = ""
+            user = ""
         }
         val body = JSONObject()
             .put("installation_id", installationId)
