@@ -9,6 +9,9 @@ import android.graphics.BitmapFactory
 import android.graphics.Matrix
 import android.net.Uri
 import android.os.Bundle
+import android.security.keystore.KeyGenParameterSpec
+import android.security.keystore.KeyProperties
+import android.util.Base64
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -65,8 +68,6 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.core.content.ContextCompat
 import androidx.exifinterface.media.ExifInterface
-import androidx.security.crypto.EncryptedSharedPreferences
-import androidx.security.crypto.MasterKey
 import androidx.lifecycle.LifecycleOwner
 import androidx.work.WorkInfo
 import androidx.work.WorkManager
@@ -86,6 +87,11 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
 import java.io.IOException
+import java.security.KeyStore
+import javax.crypto.Cipher
+import javax.crypto.KeyGenerator
+import javax.crypto.SecretKey
+import javax.crypto.spec.GCMParameterSpec
 import java.util.UUID
 import java.util.concurrent.TimeUnit
 import kotlin.math.roundToInt
@@ -105,21 +111,57 @@ object Api {
         .readTimeout(8, TimeUnit.SECONDS).writeTimeout(8, TimeUnit.SECONDS).build()
     lateinit var prefs: SharedPreferences
     private lateinit var securePrefs: SharedPreferences
+    private const val KEY_ALIAS = "aicamera.device.credentials.v1"
 
     fun initialize(context: Context) {
         val appContext = context.applicationContext
         prefs = appContext.getSharedPreferences("cfg", Context.MODE_PRIVATE)
-        val masterKey = MasterKey.Builder(appContext).setKeyScheme(MasterKey.KeyScheme.AES256_GCM).build()
-        securePrefs = EncryptedSharedPreferences.create(
-            appContext, "secure_auth", masterKey,
-            EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
-            EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
-        )
-        val legacySid = prefs.getString("sid", null)
-        if (securePrefs.getString("sid", null).isNullOrEmpty() && !legacySid.isNullOrEmpty()) {
-            securePrefs.edit().putString("sid", legacySid).apply()
-        }
+        securePrefs = appContext.getSharedPreferences("secure_auth_keystore_v1", Context.MODE_PRIVATE)
+        // Remove the old unencrypted session field; device tokens are now stored only as
+        // AES/GCM ciphertext protected by a non-exportable Android Keystore key.
         prefs.edit().remove("sid").apply()
+    }
+
+    private fun keystoreKey(): SecretKey {
+        val store = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
+        val existing = store.getKey(KEY_ALIAS, null)
+        if (existing is SecretKey) return existing
+        val generator = KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, "AndroidKeyStore")
+        val spec = KeyGenParameterSpec.Builder(
+            KEY_ALIAS,
+            KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT
+        ).setBlockModes(KeyProperties.BLOCK_MODE_GCM)
+            .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
+            .setRandomizedEncryptionRequired(true)
+            .build()
+        generator.init(spec)
+        return generator.generateKey()
+    }
+
+    private fun readSecret(name: String): String {
+        val encoded = securePrefs.getString(name, null) ?: return ""
+        return try {
+            val raw = Base64.decode(encoded, Base64.NO_WRAP)
+            if (raw.size <= 12) return ""
+            val iv = raw.copyOfRange(0, 12)
+            val encrypted = raw.copyOfRange(12, raw.size)
+            val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+            cipher.init(Cipher.DECRYPT_MODE, keystoreKey(), GCMParameterSpec(128, iv))
+            String(cipher.doFinal(encrypted), Charsets.UTF_8)
+        } catch (_: Exception) {
+            ""
+        }
+    }
+
+    private fun writeSecret(name: String, value: String) {
+        if (value.isEmpty()) {
+            securePrefs.edit().remove(name).apply()
+            return
+        }
+        val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+        cipher.init(Cipher.ENCRYPT_MODE, keystoreKey())
+        val encrypted = cipher.iv + cipher.doFinal(value.toByteArray(Charsets.UTF_8))
+        securePrefs.edit().putString(name, Base64.encodeToString(encrypted, Base64.NO_WRAP)).apply()
     }
 
     private fun rd(k: String): String = prefs.getString(k, "") ?: ""
@@ -131,17 +173,17 @@ object Api {
         get() = rd("base")
         set(v) = wr("base", v)
     var sid: String
-        get() = securePrefs.getString("sid", "") ?: ""
-        set(v) { securePrefs.edit().putString("sid", v).apply() }
+        get() = readSecret("sid")
+        set(v) = writeSecret("sid", v)
     var deviceId: String
-        get() = securePrefs.getString("device_id", "") ?: ""
-        set(v) { securePrefs.edit().putString("device_id", v).apply() }
+        get() = readSecret("device_id")
+        set(v) = writeSecret("device_id", v)
     var installationId: String
         get() {
-            val existing = securePrefs.getString("installation_id", null)
-            if (!existing.isNullOrBlank()) return existing
+            val existing = readSecret("installation_id")
+            if (existing.isNotBlank()) return existing
             val created = UUID.randomUUID().toString()
-            securePrefs.edit().putString("installation_id", created).commit()
+            writeSecret("installation_id", created)
             return created
         }
     var user: String
