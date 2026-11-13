@@ -141,7 +141,7 @@ object Api {
     var deviceId: String
         get() = securePrefs.getString("device_id", "") ?: ""
         set(v) { securePrefs.edit().putString("device_id", v).apply() }
-    var installationId: String
+    val installationId: String
         get() {
             val existing = securePrefs.getString("installation_id", null)
             if (!existing.isNullOrBlank()) return existing
