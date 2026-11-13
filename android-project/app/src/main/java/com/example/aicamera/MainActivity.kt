@@ -210,7 +210,7 @@ object Api {
 
     /** Creates or restores an anonymous device profile; no website login or pairing is needed. */
     suspend fun connectGuest(): String = withContext(Dispatchers.IO) {
-        resolve()
+        if (base.isBlank()) resolve()
         if (sid.isNotBlank()) {
             try { return@withContext validate() } catch (_: Exception) {
                 sid = ""
@@ -735,7 +735,7 @@ private fun EnhancementQueueScreen(
 private enum class MainPage { CAMERA, GALLERY, QUEUE }
 
 @Composable
-fun MainScreen(onLogout: () -> Unit) {
+fun MainScreen() {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val capture = remember { ImageCapture.Builder().setCaptureMode(ImageCapture.CAPTURE_MODE_MAXIMIZE_QUALITY).build() }
@@ -759,6 +759,9 @@ fun MainScreen(onLogout: () -> Unit) {
     var message by remember { mutableStateOf("") }
     var flashEnabled by remember { mutableStateOf(false) }
     var settingsOpen by remember { mutableStateOf(false) }
+    var serverOnline by remember { mutableStateOf<Boolean?>(null) }
+    var serverStatus by remember { mutableStateOf("Checking server…") }
+    var checkingServer by remember { mutableStateOf(false) }
     var timerSeconds by remember { mutableIntStateOf(Api.prefs.getInt("camera_timer", 0)) }
     var gridMode by remember { mutableIntStateOf(Api.prefs.getInt("camera_grid", 0)) }
 
@@ -786,13 +789,33 @@ fun MainScreen(onLogout: () -> Unit) {
     LaunchedEffect(granted) {
         if (!granted) permission.launch(Manifest.permission.CAMERA)
     }
-    LaunchedEffect(Unit) {
-        try {
-            prompts = Api.prompts()
-            if (prompts.isNotEmpty() && prompts.none { it.first == selectedPrompt }) selectedPrompt = prompts[0].first
-        } catch (e: Exception) {
-            message = e.message ?: "Could not load enhancement presets"
+    fun refreshServer() {
+        if (checkingServer) return
+        checkingServer = true
+        scope.launch {
+            val status = Api.checkServerStatus()
+            serverOnline = status.first
+            serverStatus = status.second
+            if (status.first) {
+                try {
+                    Api.connectGuest()
+                    prompts = Api.prompts()
+                    if (prompts.isNotEmpty() && prompts.none { it.first == selectedPrompt }) {
+                        selectedPrompt = prompts[0].first
+                        Api.pid = selectedPrompt
+                    }
+                } catch (e: Exception) {
+                    message = "Server is online, but the app service is unavailable: ${e.message ?: "connection error"}"
+                }
+            } else {
+                message = "Server offline · camera and local gallery are still available"
+            }
+            checkingServer = false
         }
+    }
+
+    LaunchedEffect(Unit) {
+        refreshServer()
         while (isActive) {
             try {
                 workInfos = withContext(Dispatchers.IO) {
@@ -1043,6 +1066,10 @@ fun MainScreen(onLogout: () -> Unit) {
     if (settingsOpen) {
         CameraSettingsDialog(
             accountName = Api.user,
+            serverStatus = serverStatus,
+            serverOnline = serverOnline,
+            checkingServer = checkingServer,
+            onRefreshServer = { refreshServer() },
             timerSeconds = timerSeconds,
             gridMode = gridMode,
             onTimerChange = {
@@ -1053,11 +1080,7 @@ fun MainScreen(onLogout: () -> Unit) {
                 gridMode = it
                 Api.prefs.edit().putInt("camera_grid", it).apply()
             },
-            onClose = { settingsOpen = false },
-            onDisconnect = {
-                settingsOpen = false
-                onLogout()
-            }
+            onClose = { settingsOpen = false }
         )
     }
 }
@@ -1065,6 +1088,10 @@ fun MainScreen(onLogout: () -> Unit) {
 @Composable
 private fun CameraSettingsDialog(
     accountName: String,
+    serverStatus: String,
+    serverOnline: Boolean?,
+    checkingServer: Boolean,
+    onRefreshServer: () -> Unit,
     timerSeconds: Int,
     gridMode: Int,
     onTimerChange: (Int) -> Unit,
@@ -1077,8 +1104,23 @@ private fun CameraSettingsDialog(
         title = { Text("Camera settings") },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text("Account connected", style = MaterialTheme.typography.labelMedium, color = Color.Gray)
-                Text(accountName, style = MaterialTheme.typography.titleMedium)
+                Text("Device profile", style = MaterialTheme.typography.labelMedium, color = Color.Gray)
+                Text(accountName.ifBlank { "Camera-only mode · not connected yet" }, style = MaterialTheme.typography.titleMedium)
+                Text("Server status", style = MaterialTheme.typography.labelMedium, color = Color.Gray)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    val statusColor = when (serverOnline) {
+                        true -> Color(0xFF69D69A)
+                        false -> Color(0xFFFF8797)
+                        null -> Color.LightGray
+                    }
+                    Box(Modifier.size(9.dp).background(statusColor, CircleShape))
+                    Spacer(Modifier.width(8.dp))
+                    Text(serverStatus, color = statusColor, style = MaterialTheme.typography.bodyMedium)
+                    Spacer(Modifier.weight(1f))
+                    TextButton(enabled = !checkingServer, onClick = onRefreshServer) {
+                        Text(if (checkingServer) "Checking…" else "Refresh")
+                    }
+                }
                 Text("Capture timer")
                 Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
                     listOf(0, 3, 5, 10).forEach { seconds ->
@@ -1101,8 +1143,7 @@ private fun CameraSettingsDialog(
                     color = Color.Gray, style = MaterialTheme.typography.bodySmall)
             }
         },
-        confirmButton = { TextButton(onClick = onClose) { Text("Done") } },
-        dismissButton = { TextButton(onClick = onDisconnect) { Text("Change account") } }
+        confirmButton = { TextButton(onClick = onClose) { Text("Done") } }
     )
 }
 
