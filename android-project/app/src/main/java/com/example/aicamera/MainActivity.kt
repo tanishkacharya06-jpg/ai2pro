@@ -884,16 +884,10 @@ private fun GalleryScreen(
                                     Spacer(Modifier.width(6.dp))
                                     Text("Enhancing", color = Color.White, style = MaterialTheme.typography.labelSmall)
                                 }
-                            } else if (revealAnimation && GalleryStorage.isEnhanced(LocalContext.current, file)) {
-                                AnimatedVisibility(
-                                    visible = true,
-                                    enter = slideInHorizontally(initialOffsetX = { it / 3 }) + fadeIn(tween(420)),
-                                    modifier = Modifier.align(Alignment.BottomEnd)
-                                ) {
-                                    Text("ENHANCED", Modifier.padding(6.dp)
-                                        .background(Color(0xCC151820), RoundedCornerShape(8.dp)).padding(horizontal = 7.dp, vertical = 4.dp),
-                                        color = Color(0xFFFFB5CB), style = MaterialTheme.typography.labelSmall)
-                                }
+                            } else if (GalleryStorage.isEnhanced(LocalContext.current, file)) {
+                                Text("ENHANCED", Modifier.align(Alignment.BottomEnd).padding(6.dp)
+                                    .background(Color(0xCC151820), RoundedCornerShape(8.dp)).padding(horizontal = 7.dp, vertical = 4.dp),
+                                    color = Color(0xFFFFB5CB), style = MaterialTheme.typography.labelSmall)
                             }
                         }
                     }
