@@ -36,7 +36,7 @@ jobs:
         with:
           name: AICamera-Android-v2.0-delivery
           path: |
-            AICamera-Android-v1.9-debug.apk
-            AICamera-Android-v1.9-source.zip
+            AICamera-Android-v2.0-debug.apk
+            AICamera-Android-v2.0-source.zip
           if-no-files-found: error
           retention-days: 30
