@@ -1143,6 +1143,15 @@ fun MainScreen() {
 
     fun logoutForSwitch() {
         if (accountBusy) return
+        val unresolved = workInfos.any { info ->
+            info.state == WorkInfo.State.RUNNING || info.state == WorkInfo.State.ENQUEUED ||
+                info.state == WorkInfo.State.BLOCKED ||
+                info.outputData.getString(KEY_PENDING_ENHANCED_FILE)?.let { File(it).isFile } == true
+        }
+        if (unresolved) {
+            accountError = "Finish or remove active enhancement tasks and choose the completed result before switching accounts."
+            return
+        }
         accountBusy = true
         accountError = ""
         scope.launch {
