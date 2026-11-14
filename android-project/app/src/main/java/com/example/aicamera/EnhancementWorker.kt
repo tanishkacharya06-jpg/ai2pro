@@ -49,6 +49,7 @@ const val KEY_CREATED_AT = "created_at"
 const val KEY_STAGE = "stage"
 const val KEY_ERROR = "error"
 const val KEY_TASK_STATUS = "task_status"
+const val KEY_PENDING_ENHANCED_FILE = "pending_enhanced_file"
 
 /**
  * WorkManager persists this FIFO chain across process death and app restarts.
@@ -112,12 +113,15 @@ class EnhancementWorker(
                 setProgressAsync(workDataOf(KEY_STAGE to message))
             }
             if (outputs.isEmpty()) throw IOException("The enhancement server returned no images")
-            // Replace the existing visible gallery item instead of creating a second entry.
-            // GalleryStorage keeps the original in its private backup folder for Revert.
-            GalleryStorage.replacePrimary(applicationContext, source, outputs.first())
-            runCatching { Api.syncGallery(applicationContext) }
+            // Keep the original visible until the user chooses Original, Enhanced, or Both.
+            val pending = GalleryStorage.storePendingEnhancement(applicationContext, source, outputs.first())
             outputs.forEach { it.delete() }
-            Result.success(workDataOf(KEY_TASK_STATUS to "completed", "result_count" to 1))
+            Result.success(workDataOf(
+                KEY_TASK_STATUS to "completed",
+                KEY_PENDING_ENHANCED_FILE to pending.absolutePath,
+                KEY_SOURCE_FILE to source.absolutePath,
+                "result_count" to 1
+            ))
         } catch (e: AuthExpired) {
             Result.success(workDataOf(KEY_TASK_STATUS to "failed", KEY_ERROR to "Your server session expired. Sign in again, then retry this task."))
         } catch (e: ApiHttpException) {
