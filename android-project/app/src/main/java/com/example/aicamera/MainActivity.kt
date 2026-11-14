@@ -1026,6 +1026,7 @@ private fun PhotoEditorDialog(
     onSave: (File) -> Unit
 ) {
     val context = LocalContext.current
+    val editorScope = rememberCoroutineScope()
     val sourcePreview = rememberPhotoBitmap(file, 3)
     var brightness by remember(file) { mutableFloatStateOf(0f) }
     var contrast by remember(file) { mutableFloatStateOf(1f) }
@@ -1080,11 +1081,10 @@ private fun PhotoEditorDialog(
                         busy = true
                         val b = brightness; val c = contrast; val sat = saturation
                         val rot = rotation; val mirrored = flip; val square = cropSquare
-                        LaunchedEffect(b, c, sat, rot, mirrored, square) { }
                         val output = File(context.cacheDir, "edited_${UUID.randomUUID()}.jpg")
                         // Use the full-resolution original for the saved output.
                         val source = file
-                        kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).launch {
+                        editorScope.launch(Dispatchers.IO) {
                             try {
                                 val full = loadBmp(source, 1)
                                 val edited = renderEditedBitmap(full, b, c, sat, rot, mirrored, square)
