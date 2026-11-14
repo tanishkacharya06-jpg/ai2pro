@@ -575,6 +575,7 @@ private fun rememberPhotoBitmap(file: File, sampleSize: Int = 1): Bitmap? {
 private fun CameraPreview(
     capture: ImageCapture,
     frontFacing: Boolean,
+    focusMode: String,
     onCameraReady: (Camera?, Float) -> Unit,
     onFacingFallback: () -> Unit,
     onZoomGesture: (Float) -> Unit,
@@ -586,11 +587,11 @@ private fun CameraPreview(
 
     var boundCamera by remember { mutableStateOf<Camera?>(null) }
     Box(Modifier.fillMaxSize()
-        .pointerInput(frontFacing) {
+        .pointerInput(frontFacing, focusMode) {
             detectTapGestures { position ->
                 val view = previewView
                 val camera = boundCamera
-                if (view != null && camera != null) {
+                if (focusMode == "Tap to Focus" && view != null && camera != null) {
                     runCatching {
                         val point = view.meteringPointFactory.createPoint(position.x, position.y)
                         camera.cameraControl.startFocusAndMetering(FocusMeteringAction.Builder(point).build())
@@ -640,6 +641,19 @@ private fun CameraPreview(
         } catch (e: Exception) {
             onCameraReady(null, 1f)
             onError(e.message ?: "Unable to start camera preview")
+        }
+    }
+
+    LaunchedEffect(focusMode, previewView, boundCamera) {
+        if (focusMode == "Auto Focus") {
+            val view = previewView
+            val camera = boundCamera
+            if (view != null && camera != null && view.width > 0 && view.height > 0) {
+                runCatching {
+                    val center = view.meteringPointFactory.createPoint(view.width / 2f, view.height / 2f)
+                    camera.cameraControl.startFocusAndMetering(FocusMeteringAction.Builder(center).build())
+                }
+            }
         }
     }
 
@@ -923,6 +937,8 @@ fun MainScreen() {
     var workInfos by remember { mutableStateOf(listOf<WorkInfo>()) }
     var message by remember { mutableStateOf("") }
     var flashEnabled by remember { mutableStateOf(false) }
+    var focusMode by remember { mutableStateOf(Api.prefs.getString("focus_mode", "Continuous Focus") ?: "Continuous Focus") }
+    var focusMenuOpen by remember { mutableStateOf(false) }
     var settingsOpen by remember { mutableStateOf(false) }
     var serverOnline by remember { mutableStateOf<Boolean?>(null) }
     var serverStatus by remember { mutableStateOf("Checking server…") }
@@ -1073,9 +1089,8 @@ fun MainScreen() {
                 val saved = withContext(Dispatchers.IO) { GalleryStorage.save(context, source, "original") }
                 runCatching { Api.syncGallery(context) }
                 if (enhance) {
-                    GalleryStorage.ensureOriginalBackup(context, saved)
                     enqueueEnhancement(context, saved, selectedPrompt)
-                    Toast.makeText(context, "Original saved · added to enhancement queue", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(context, "Original saved · enhancement running in background", Toast.LENGTH_SHORT).show()
                 } else {
                     Toast.makeText(context, "Original photo saved", Toast.LENGTH_SHORT).show()
                 }
@@ -1147,6 +1162,7 @@ fun MainScreen() {
                     CameraPreview(
                         capture = capture,
                         frontFacing = cameraFront,
+                        focusMode = focusMode,
                         onCameraReady = { camera, max ->
                             activeCamera = camera
                             maxZoomRatio = max
@@ -1167,6 +1183,19 @@ fun MainScreen() {
 
                 Row(Modifier.fillMaxWidth().align(Alignment.TopCenter).padding(10.dp), verticalAlignment = Alignment.CenterVertically) {
                     TextButton(onClick = { settingsOpen = true }) { Text("⚙ Settings", color = Color.White) }
+                    Spacer(Modifier.width(4.dp))
+                    Box {
+                        TextButton(onClick = { focusMenuOpen = true }) { Text("Focus: $focusMode", color = Color.White) }
+                        DropdownMenu(expanded = focusMenuOpen, onDismissRequest = { focusMenuOpen = false }) {
+                            listOf("Auto Focus", "Continuous Focus", "Tap to Focus").forEach { option ->
+                                DropdownMenuItem(text = { Text(option) }, onClick = {
+                                    focusMode = option
+                                    Api.prefs.edit().putString("focus_mode", option).apply()
+                                    focusMenuOpen = false
+                                })
+                            }
+                        }
+                    }
                     Spacer(Modifier.weight(1f))
                     val hasFlash = activeCamera?.cameraInfo?.hasFlashUnit() == true
                     TextButton(enabled = hasFlash, onClick = {
@@ -1218,11 +1247,18 @@ fun MainScreen() {
                             .background(if (captureRunning) Color.Gray else Color.White, CircleShape)
                             .clickable(enabled = granted && !captureRunning) { shoot() })
                         Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                            TextButton(onClick = { page = MainPage.QUEUE }) {
-                                Text("Queue ${workInfos.count { it.state == WorkInfo.State.ENQUEUED || it.state == WorkInfo.State.BLOCKED || it.state == WorkInfo.State.RUNNING }}")
+                            val runningCount = workInfos.count { it.state == WorkInfo.State.RUNNING }
+                            val waitingCount = workInfos.count { it.state == WorkInfo.State.ENQUEUED || it.state == WorkInfo.State.BLOCKED }
+                            if (runningCount > 0 && waitingCount > 0) {
+                                TextButton(onClick = { page = MainPage.QUEUE }) { Text("Queue · $waitingCount waiting") }
+                            } else if (runningCount > 0) {
+                                Text("Enhancing in background", color = Color(0xFFFFB5CE), style = MaterialTheme.typography.labelSmall)
+                            } else if (waitingCount > 0) {
+                                Text("$waitingCount waiting", color = Color.LightGray, style = MaterialTheme.typography.labelSmall)
                             }
-                            Text("${workInfos.count { it.state == WorkInfo.State.SUCCEEDED }} completed", color = Color.LightGray,
-                                style = MaterialTheme.typography.labelSmall)
+                            if (workInfos.any { it.outputData.getString(KEY_PENDING_ENHANCED_FILE)?.let { path -> File(path).isFile } == true }) {
+                                TextButton(onClick = { page = MainPage.QUEUE }) { Text("Review result") }
+                            }
                         }
                     }
                 }
@@ -1254,10 +1290,8 @@ fun MainScreen() {
                     onEnhance = { file ->
                         scope.launch {
                             try {
-                                GalleryStorage.ensureOriginalBackup(context, file)
                                 enqueueEnhancement(context, file, selectedPrompt)
-                                Toast.makeText(context, "Added to enhancement queue", Toast.LENGTH_SHORT).show()
-                                page = MainPage.QUEUE
+                                Toast.makeText(context, "Enhancement started in background", Toast.LENGTH_SHORT).show()
                             } catch (e: Exception) { message = e.message ?: "Unable to queue enhancement" }
                         }
                     },
@@ -1290,6 +1324,36 @@ fun MainScreen() {
                             Toast.makeText(context, "Task added to queue", Toast.LENGTH_SHORT).show()
                         } catch (e: Exception) { message = e.message ?: "Unable to retry task" }
                     } else message = "The original photo is missing, so this task cannot be retried"
+                },
+                onCancel = { info ->
+                    info.outputData.getString(KEY_PENDING_ENHANCED_FILE)?.takeIf { it.isNotBlank() }?.let { GalleryStorage.discardPendingEnhancement(File(it)) }
+                    WorkManager.getInstance(context).cancelWorkById(info.id)
+                },
+                onClearHistory = {
+                    WorkManager.getInstance(context).pruneWork()
+                    context.getSharedPreferences("enhancement_queue_metadata", Context.MODE_PRIVATE).edit().clear().apply()
+                },
+                onKeepOriginal = { info ->
+                    info.outputData.getString(KEY_PENDING_ENHANCED_FILE)?.takeIf { it.isNotBlank() }?.let { GalleryStorage.discardPendingEnhancement(File(it)) }
+                    Toast.makeText(context, "Original photo kept", Toast.LENGTH_SHORT).show()
+                },
+                onKeepEnhanced = { info ->
+                    val source = info.outputData.getString(KEY_SOURCE_FILE).orEmpty()
+                    val pending = info.outputData.getString(KEY_PENDING_ENHANCED_FILE).orEmpty()
+                    try {
+                        GalleryStorage.applyPendingEnhancement(context, File(source), File(pending), false)
+                        scope.launch { runCatching { Api.syncGallery(context) }; galleryFiles = withContext(Dispatchers.IO) { GalleryStorage.list(context) } }
+                        Toast.makeText(context, "Enhanced photo saved", Toast.LENGTH_SHORT).show()
+                    } catch (e: Exception) { message = e.message ?: "Could not save enhanced photo" }
+                },
+                onKeepBoth = { info ->
+                    val source = info.outputData.getString(KEY_SOURCE_FILE).orEmpty()
+                    val pending = info.outputData.getString(KEY_PENDING_ENHANCED_FILE).orEmpty()
+                    try {
+                        GalleryStorage.applyPendingEnhancement(context, File(source), File(pending), true)
+                        scope.launch { runCatching { Api.syncGallery(context) }; galleryFiles = withContext(Dispatchers.IO) { GalleryStorage.list(context) } }
+                        Toast.makeText(context, "Enhanced photo saved; original kept for Revert", Toast.LENGTH_SHORT).show()
+                    } catch (e: Exception) { message = e.message ?: "Could not save both versions" }
                 }
             )
         }
