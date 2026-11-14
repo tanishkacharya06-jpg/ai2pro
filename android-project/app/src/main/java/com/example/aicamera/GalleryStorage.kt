@@ -173,6 +173,24 @@ object GalleryStorage {
         }?.sortedByDescending { it.lastModified() } ?: emptyList()
     }
 
+    fun queueCloudDelete(context: Context, name: String) {
+        val prefs = context.getSharedPreferences("cloud_gallery_sync", Context.MODE_PRIVATE)
+        val names = prefs.getStringSet("pending_deletes", emptySet())?.toMutableSet() ?: mutableSetOf()
+        names.add(name)
+        prefs.edit().putStringSet("pending_deletes", names).apply()
+    }
+
+    fun pendingCloudDeletes(context: Context): Set<String> =
+        context.getSharedPreferences("cloud_gallery_sync", Context.MODE_PRIVATE)
+            .getStringSet("pending_deletes", emptySet())?.toSet() ?: emptySet()
+
+    fun clearCloudDelete(context: Context, name: String) {
+        val prefs = context.getSharedPreferences("cloud_gallery_sync", Context.MODE_PRIVATE)
+        val names = prefs.getStringSet("pending_deletes", emptySet())?.toMutableSet() ?: mutableSetOf()
+        names.remove(name)
+        prefs.edit().putStringSet("pending_deletes", names).apply()
+    }
+
     @Synchronized
     fun importRemote(context: Context, source: File, name: String, modified: Long): File {
         val safeName = File(name).name
