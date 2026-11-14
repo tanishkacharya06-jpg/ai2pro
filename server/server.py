@@ -8,7 +8,7 @@ from pydantic import BaseModel
 from PIL import Image, ImageOps
 import tunnel
 
-VERSION = "1.9"
+VERSION = "2.0"
 ENGINE = os.getenv("ENGINE", "echo")                       # chatgpt | openai | echo
 LEGACY_TOKEN = os.getenv("APP_TOKEN")                      # optional: keeps the old Android app working
 ALLOW_SIGNUP = os.getenv("ALLOW_SIGNUP", "1") == "1"       # set 0 to stop new accounts
