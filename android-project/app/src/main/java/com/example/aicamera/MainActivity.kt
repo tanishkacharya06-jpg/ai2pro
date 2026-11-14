@@ -95,6 +95,7 @@ import javax.crypto.spec.GCMParameterSpec
 import java.util.UUID
 import java.util.concurrent.TimeUnit
 import kotlin.math.roundToInt
+import kotlin.math.abs
 
 const val DEFAULT_LINK = "aicam-dc66661a0788dd75"   // must equal PAIR_CODE in the server's startup.bat
 
@@ -575,7 +576,7 @@ private fun rememberPhotoBitmap(file: File, sampleSize: Int = 1): Bitmap? {
 private fun CameraPreview(
     capture: ImageCapture,
     frontFacing: Boolean,
-    onCameraReady: (Camera?, Float) -> Unit,
+    onCameraReady: (Camera?, Float, Float) -> Unit,
     onFacingFallback: () -> Unit,
     onZoomGesture: (Float) -> Unit,
     onError: (String) -> Unit
@@ -749,7 +750,27 @@ private fun PhotoViewer(
     var offset by remember(current) { mutableStateOf(Offset.Zero) }
 
     Dialog(onDismissRequest = onClose, properties = DialogProperties(usePlatformDefaultWidth = false)) {
-        Box(Modifier.fillMaxSize().background(Color.Black)) {
+        Box(
+            Modifier.fillMaxSize().background(Color.Black)
+                .pointerInput(index, scale) {
+                    var dragTotal = 0f
+                    detectHorizontalDragGestures(
+                        onDragEnd = {
+                            if (scale <= 1.05f && abs(dragTotal) > 64f) {
+                                index = if (dragTotal < 0f) (index + 1).coerceAtMost(files.lastIndex)
+                                    else (index - 1).coerceAtLeast(0)
+                                scale = 1f
+                                offset = Offset.Zero
+                            }
+                            dragTotal = 0f
+                        },
+                        onHorizontalDrag = { change, amount ->
+                            dragTotal += amount
+                            change.consume()
+                        }
+                    )
+                }
+        ) {
             if (bitmap != null) {
                 Image(
                     bitmap.asImageBitmap(),
@@ -877,7 +898,7 @@ private enum class MainPage { CAMERA, GALLERY, QUEUE }
 fun MainScreen() {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
-    val capture = remember { ImageCapture.Builder().setCaptureMode(ImageCapture.CAPTURE_MODE_MAXIMIZE_QUALITY).build() }
+    val capture = remember { ImageCapture.Builder().setCaptureMode(ImageCapture.CAPTURE_MODE_MINIMIZE_LATENCY).build() }
     var granted by remember { mutableStateOf(ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) }
     val permission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted = it }
 
@@ -888,6 +909,7 @@ fun MainScreen() {
     var activeCamera by remember { mutableStateOf<Camera?>(null) }
     var zoomRatio by remember { mutableFloatStateOf(1f) }
     var maxZoomRatio by remember { mutableFloatStateOf(1f) }
+    var minZoomRatio by remember { mutableFloatStateOf(1f) }
     var pendingPhoto by remember { mutableStateOf<File?>(null) }
     var savingPhoto by remember { mutableStateOf(false) }
     var captureRunning by remember { mutableStateOf(false) }
@@ -998,7 +1020,7 @@ fun MainScreen() {
 
     fun setZoom(target: Float) {
         val camera = activeCamera ?: return
-        val next = target.coerceIn(1f, maxZoomRatio.coerceAtLeast(1f))
+        val next = target.coerceIn(minZoomRatio.coerceAtMost(1f), maxZoomRatio.coerceAtLeast(1f))
         zoomRatio = next
         try { camera.cameraControl.setZoomRatio(next) } catch (_: Exception) { }
     }
@@ -1139,16 +1161,22 @@ fun MainScreen() {
                     }
                 }
 
-                Row(Modifier.fillMaxWidth().align(Alignment.TopCenter).padding(10.dp), verticalAlignment = Alignment.CenterVertically) {
-                    TextButton(onClick = { settingsOpen = true }) { Text("⚙ Settings", color = Color.White) }
-                    Spacer(Modifier.weight(1f))
+                Row(
+                    Modifier.fillMaxWidth().align(Alignment.TopCenter).padding(horizontal = 18.dp, vertical = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
                     val hasFlash = activeCamera?.cameraInfo?.hasFlashUnit() == true
-                    TextButton(enabled = hasFlash, onClick = {
-                        flashEnabled = !flashEnabled
-                        activeCamera?.cameraControl?.enableTorch(flashEnabled)
-                    }) { Text(if (!hasFlash) "No flash" else if (flashEnabled) "Flash ON" else "Flash OFF", color = Color.White) }
-                    TextButton(onClick = { cameraFront = !cameraFront; zoomRatio = 1f; flashEnabled = false }) {
-                        Text("⇄ Switch", color = Color.White)
+                    Surface(color = Color(0x66000000), shape = RoundedCornerShape(24.dp)) {
+                        TextButton(enabled = hasFlash, onClick = {
+                            flashEnabled = !flashEnabled
+                            activeCamera?.cameraControl?.enableTorch(flashEnabled)
+                        }) { Text(if (flashEnabled) "⚡ ON" else "⚡", color = Color.White) }
+                    }
+                    Spacer(Modifier.weight(1f))
+                    Surface(color = Color(0x99000000), shape = RoundedCornerShape(24.dp)) {
+                        TextButton(onClick = { settingsOpen = true }) {
+                            Text("⚙", color = Color.White, style = MaterialTheme.typography.titleLarge)
+                        }
                     }
                 }
                 if (gridMode > 0) {
@@ -1171,33 +1199,78 @@ fun MainScreen() {
                         .background(Color(0xBB261B31), RoundedCornerShape(12.dp)).padding(horizontal = 14.dp, vertical = 8.dp))
                 }
 
-                Column(Modifier.align(Alignment.CenterEnd).padding(end = 12.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                    Text("${zoomRatio.formatZoom()}×", color = Color.White, style = MaterialTheme.typography.labelLarge,
-                        modifier = Modifier.background(Color(0x99000000), RoundedCornerShape(12.dp)).padding(horizontal = 10.dp, vertical = 6.dp))
-                    Spacer(Modifier.height(8.dp))
-                    OutlinedButton(enabled = zoomRatio > 1.01f, onClick = { setZoom(zoomRatio / 1.25f) }) { Text("−") }
-                    Spacer(Modifier.height(6.dp))
-                    OutlinedButton(enabled = zoomRatio < maxZoomRatio, onClick = { setZoom(zoomRatio * 1.25f) }) { Text("+") }
+                // Compact zoom selector positioned above the shutter row, like the supplied camera reference.
+                Row(
+                    Modifier.align(Alignment.BottomCenter).padding(bottom = 154.dp)
+                        .background(Color(0x99000000), RoundedCornerShape(28.dp)).padding(horizontal = 5.dp, vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(2.dp)
+                ) {
+                    listOf(0.5f, 1f, 2f).forEach { factor ->
+                        val available = factor >= minZoomRatio - 0.01f && factor <= maxZoomRatio + 0.01f
+                        TextButton(
+                            enabled = available,
+                            onClick = { setZoom(factor) },
+                            colors = ButtonDefaults.textButtonColors(
+                                contentColor = Color.White,
+                                disabledContentColor = Color.Gray
+                            ),
+                            contentPadding = PaddingValues(horizontal = 13.dp, vertical = 2.dp)
+                        ) {
+                            Text(if (zoomRatio == factor) "${factor}×" else factor.toString().removeSuffix(".0"))
+                        }
+                    }
                 }
 
-                Column(Modifier.align(Alignment.BottomCenter).fillMaxWidth()
-                    .background(Color(0xA50E0916)).padding(bottom = 22.dp, top = 12.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally) {
-                    Chips(prompts, selectedPrompt) { selectedPrompt = it; Api.pid = it }
-                    Spacer(Modifier.height(14.dp))
-                    Row(Modifier.fillMaxWidth().padding(horizontal = 18.dp), verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween) {
-                        OutlinedButton(onClick = { page = MainPage.GALLERY }) { Text("Gallery") }
-                        Box(Modifier.size(76.dp).border(4.dp, Color.White, CircleShape).padding(7.dp)
-                            .background(if (captureRunning) Color.Gray else Color.White, CircleShape)
-                            .clickable(enabled = granted && !captureRunning) { shoot() })
-                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                            TextButton(onClick = { page = MainPage.QUEUE }) {
-                                Text("Queue ${workInfos.count { it.state == WorkInfo.State.ENQUEUED || it.state == WorkInfo.State.BLOCKED || it.state == WorkInfo.State.RUNNING }}")
-                            }
-                            Text("${workInfos.count { it.state == WorkInfo.State.SUCCEEDED }} completed", color = Color.LightGray,
-                                style = MaterialTheme.typography.labelSmall)
+                Column(
+                    Modifier.align(Alignment.BottomCenter).fillMaxWidth()
+                        .background(Color(0xE6090A0F))
+                        .navigationBarsPadding()
+                        .padding(top = 10.dp, bottom = 8.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Row(
+                        Modifier.fillMaxWidth().height(88.dp).padding(horizontal = 24.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        TextButton(onClick = { page = MainPage.GALLERY }) {
+                            Text("▣", color = Color.White, style = MaterialTheme.typography.headlineMedium)
                         }
+                        Box(
+                            Modifier.size(76.dp).border(4.dp, Color.White, CircleShape).padding(6.dp)
+                                .background(if (captureRunning) Color.LightGray else Color.White, CircleShape)
+                                .clickable(enabled = granted && !captureRunning) { shoot() }
+                        )
+                        TextButton(onClick = {
+                            cameraFront = !cameraFront
+                            zoomRatio = 1f
+                            flashEnabled = false
+                        }) {
+                            Text("⟳", color = Color.White, style = MaterialTheme.typography.headlineLarge)
+                        }
+                    }
+                    Row(
+                        Modifier.fillMaxWidth().padding(horizontal = 12.dp),
+                        horizontalArrangement = Arrangement.SpaceEvenly,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        listOf("FUN", "PORTRAIT", "PHOTO", "VIDEO", "MORE").forEach { mode ->
+                            val selected = mode == "PHOTO"
+                            TextButton(
+                                onClick = {
+                                    if (mode == "MORE") page = MainPage.QUEUE
+                                    else if (mode != "PHOTO") message = "$mode mode is coming soon"
+                                },
+                                contentPadding = PaddingValues(horizontal = 5.dp, vertical = 4.dp)
+                            ) {
+                                Text(mode, color = if (selected) Color.White else Color.LightGray,
+                                    style = MaterialTheme.typography.labelLarge)
+                            }
+                        }
+                    }
+                    if (prompts.isNotEmpty()) {
+                        Chips(prompts, selectedPrompt) { selectedPrompt = it; Api.pid = it }
                     }
                 }
             }
