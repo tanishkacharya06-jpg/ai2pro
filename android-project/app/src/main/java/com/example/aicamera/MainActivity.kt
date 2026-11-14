@@ -376,6 +376,10 @@ object Api {
 
     suspend fun syncGallery(context: Context): Int = withContext(Dispatchers.IO) {
         if (sid.isBlank() || user.isBlank()) return@withContext 0
+        for (name in GalleryStorage.pendingCloudDeletes(context)) {
+            deleteCloudPhoto(name)
+            GalleryStorage.clearCloudDelete(context, name)
+        }
         val index = http.newCall(rq("/api/gallery").get().build()).execute().use { r ->
             check(r)
             JSONArray(r.body!!.string())
@@ -402,6 +406,9 @@ object Api {
             val name = item.getString("name")
             val modified = item.optLong("modified", 0L)
             val local = localFiles.firstOrNull { it.name == name }
+            if (local != null && remoteEnhanced[name] == true && !GalleryStorage.isEnhanced(context, local)) {
+                GalleryStorage.markEnhanced(context, local)
+            }
             if (local == null || modified > local.lastModified() + 1000L) {
                 val url = "$base/api/gallery/${Uri.encode(name)}"
                 val temp = File(context.cacheDir, "cloud_${UUID.randomUUID()}_${File(name).name}")
@@ -1728,7 +1735,8 @@ fun MainScreen() {
                     onDelete = { file ->
                         scope.launch {
                             try {
-                                runCatching { Api.deleteCloudPhoto(file.name) }
+                                try { Api.deleteCloudPhoto(file.name) }
+                                catch (_: Exception) { GalleryStorage.queueCloudDelete(context, file.name) }
                                 withContext(Dispatchers.IO) { GalleryStorage.deletePhoto(context, file) }
                                 galleryFiles = withContext(Dispatchers.IO) { GalleryStorage.list(context) }
                                 enqueueGallerySync(context)
