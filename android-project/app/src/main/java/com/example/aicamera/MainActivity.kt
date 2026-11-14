@@ -809,31 +809,43 @@ private fun PhotoViewer(
 
 @Composable
 private fun EnhancementQueueScreen(
-    items: List<WorkInfo>,
-    onBack: () -> Unit,
-    onRetry: (WorkInfo) -> Unit
+    items: List<WorkInfo>, onBack: () -> Unit, onRetry: (WorkInfo) -> Unit,
+    onCancel: (WorkInfo) -> Unit, onClearHistory: () -> Unit,
+    onKeepOriginal: (WorkInfo) -> Unit, onKeepEnhanced: (WorkInfo) -> Unit,
+    onKeepBoth: (WorkInfo) -> Unit
 ) {
+    val history = items.filter { it.state == WorkInfo.State.SUCCEEDED || it.state == WorkInfo.State.FAILED || it.state == WorkInfo.State.CANCELLED }
     Column(Modifier.fillMaxSize().background(Color(0xFF120B1F)).padding(16.dp)) {
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             TextButton(onClick = onBack) { Text("‹ Camera") }
             Spacer(Modifier.weight(1f))
             Text("Enhancement queue", color = Color.White, style = MaterialTheme.typography.titleLarge)
             Spacer(Modifier.weight(1f))
-            Spacer(Modifier.width(44.dp))
         }
-        Text("Tasks run one at a time and resume after an app restart.", color = Color.LightGray,
-            style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(bottom = 14.dp))
+        Text("Processing continues in the background. Completed photos wait here for your keep choice.",
+            color = Color.LightGray, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(bottom = 12.dp))
+        if (history.isNotEmpty()) {
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Text("History (${history.size})", color = Color.White, style = MaterialTheme.typography.titleMedium)
+                Spacer(Modifier.weight(1f))
+                TextButton(onClick = onClearHistory) { Text("Clear History") }
+            }
+        }
         if (items.isEmpty()) {
-            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { Text("Your queue is empty", color = Color.Gray) }
+            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { Text("No active or completed tasks", color = Color.Gray) }
         } else {
             LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 itemsIndexed(items, key = { _, info -> info.id.toString() }) { _, info ->
                     val taskOutcome = info.outputData.getString(KEY_TASK_STATUS).orEmpty()
+                    val pendingPath = info.outputData.getString(KEY_PENDING_ENHANCED_FILE).orEmpty()
+                    val pendingFile = pendingPath.takeIf { it.isNotBlank() }?.let(::File)
+                    val hasPendingChoice = taskOutcome == "completed" && pendingFile?.isFile == true
                     val taskFailed = taskOutcome == "failed" || info.state == WorkInfo.State.FAILED
                     val status = when {
                         taskFailed -> "Failed"
+                        hasPendingChoice -> "Choose version"
                         taskOutcome == "completed" -> "Completed"
-                        info.state == WorkInfo.State.ENQUEUED || info.state == WorkInfo.State.BLOCKED -> "Pending"
+                        info.state == WorkInfo.State.ENQUEUED || info.state == WorkInfo.State.BLOCKED -> "Waiting"
                         info.state == WorkInfo.State.RUNNING -> "Processing"
                         info.state == WorkInfo.State.CANCELLED -> "Cancelled"
                         info.state == WorkInfo.State.SUCCEEDED -> "Completed"
@@ -852,15 +864,29 @@ private fun EnhancementQueueScreen(
                                 LinearProgressIndicator(Modifier.fillMaxWidth())
                                 if (stage.isNotBlank()) Text(stage, color = Color.LightGray, style = MaterialTheme.typography.bodySmall,
                                     modifier = Modifier.padding(top = 6.dp))
+                            } else if (info.state == WorkInfo.State.ENQUEUED || info.state == WorkInfo.State.BLOCKED) {
+                                Text("Waiting for the current photo to finish", color = Color.LightGray,
+                                    style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(top = 6.dp))
+                                TextButton(onClick = { onCancel(info) }) { Text("Remove from queue") }
                             }
                             if (taskFailed) {
                                 val error = info.outputData.getString(KEY_ERROR).orEmpty()
                                 if (error.isNotBlank()) Text(error, color = Color(0xFFFFAAB6), style = MaterialTheme.typography.bodySmall,
                                     modifier = Modifier.padding(top = 6.dp))
-                                TextButton(onClick = { onRetry(info) }) { Text("Retry") }
+                                Row {
+                                    TextButton(onClick = { onRetry(info) }) { Text("Retry") }
+                                    TextButton(onClick = { onCancel(info) }) { Text("Remove") }
+                                }
                             }
-                            if (taskOutcome == "completed" || info.state == WorkInfo.State.SUCCEEDED) {
-                                Text("Enhanced image saved to the gallery", color = Color.LightGray, style = MaterialTheme.typography.bodySmall,
+                            if (hasPendingChoice) {
+                                Text("Which photo do you want to keep?", color = Color.White, modifier = Modifier.padding(top = 10.dp))
+                                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                    OutlinedButton(modifier = Modifier.weight(1f), onClick = { onKeepOriginal(info) }) { Text("Original") }
+                                    Button(modifier = Modifier.weight(1f), onClick = { onKeepEnhanced(info) }) { Text("Enhanced") }
+                                }
+                                OutlinedButton(modifier = Modifier.fillMaxWidth(), onClick = { onKeepBoth(info) }) { Text("Original + Enhanced") }
+                            } else if (taskOutcome == "completed" || info.state == WorkInfo.State.SUCCEEDED) {
+                                Text("Saved to your gallery", color = Color.LightGray, style = MaterialTheme.typography.bodySmall,
                                     modifier = Modifier.padding(top = 6.dp))
                             }
                         }
