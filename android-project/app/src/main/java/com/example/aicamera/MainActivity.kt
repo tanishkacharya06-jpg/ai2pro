@@ -838,6 +838,7 @@ private fun GalleryScreen(
 private fun PhotoViewer(
     files: List<File>,
     startFile: File,
+    pendingPaths: Set<String>,
     onClose: () -> Unit,
     onEnhance: (File) -> Unit,
     onRevert: (File) -> Unit,
@@ -850,6 +851,9 @@ private fun PhotoViewer(
     val current = files.getOrNull(index) ?: startFile
     val bitmap = rememberPhotoBitmap(current, 1)
     val canRevert = remember(current) { GalleryStorage.hasOriginalBackup(context, current) }
+    val isPending = pendingPaths.contains(current.absolutePath)
+    val viewerBlur by animateDpAsState(if (isPending) 18.dp else 0.dp, animationSpec = tween(650), label = "viewerBlur")
+    val viewerReveal by animateFloatAsState(if (isPending) 0f else 1f, animationSpec = tween(700), label = "viewerReveal")
     var scale by remember(current) { mutableFloatStateOf(1f) }
     var offset by remember(current) { mutableStateOf(Offset.Zero) }
     var confirmDelete by remember(current) { mutableStateOf(false) }
@@ -881,6 +885,11 @@ private fun PhotoViewer(
                     bitmap.asImageBitmap(),
                     contentDescription = current.name,
                     modifier = Modifier.fillMaxSize()
+                        .blur(viewerBlur)
+                        .graphicsLayer {
+                            alpha = if (isPending) 0.6f else viewerReveal
+                            translationX = if (!isPending) (1f - viewerReveal) * size.width * 0.08f else 0f
+                        }
                         .pointerInput(current) {
                             detectTransformGestures { _, pan, zoomChange, _ ->
                                 val next = (scale * zoomChange).coerceIn(1f, 6f)
@@ -913,7 +922,8 @@ private fun PhotoViewer(
             TextButton(onClick = onClose, modifier = Modifier.align(Alignment.TopStart).padding(10.dp)) {
                 Text("✕ Close", color = Color.White)
             }
-            Text("Pinch or double-tap to zoom", color = Color.White.copy(alpha = 0.75f),
+            Text(if (isPending) "Enhancing photo…" else "Pinch or double-tap to zoom",
+                color = Color.White.copy(alpha = 0.85f),
                 modifier = Modifier.align(Alignment.TopCenter).padding(top = 20.dp))
             Column(Modifier.align(Alignment.BottomCenter).fillMaxWidth().padding(12.dp)) {
                 Surface(color = Color(0xCC15151B), shape = RoundedCornerShape(18.dp)) {
@@ -931,11 +941,11 @@ private fun PhotoViewer(
                         TextButton(onClick = { onExport(current); onClose() }) {
                             Text("⇧ Export", color = Color.White)
                         }
-                        if (!canRevert) {
+                        if (!canRevert && !isPending) {
                             TextButton(onClick = { onEnhance(current); onClose() }) {
                                 Text("✧ Enhance", color = Color(0xFFFFB5CE))
                             }
-                        } else {
+                        } else if (canRevert && !isPending) {
                             TextButton(onClick = { onRevert(current); onClose() }) {
                                 Text("↶ Revert", color = Color.White)
                             }
@@ -1210,7 +1220,7 @@ fun MainScreen() {
         // Close the preview on the same frame as the tap. Disk I/O, upload and AI
         // processing continue off the camera UI thread.
         pendingPhoto = null
-        savingPhoto = true
+        savingPhoto = false
         scope.launch {
             try {
                 val saved = withContext(Dispatchers.IO) {
@@ -1231,7 +1241,6 @@ fun MainScreen() {
                 message = e.message ?: "Unable to save photo"
             } finally {
                 source.delete()
-                savingPhoto = false
             }
         }
     }
@@ -1456,6 +1465,7 @@ fun MainScreen() {
                 PhotoViewer(
                     files = snapshot,
                     startFile = start,
+                    pendingPaths = pendingEnhancementPaths,
                     onClose = { viewerFiles = null; viewerStart = null },
                     onEnhance = { file ->
                         scope.launch {
