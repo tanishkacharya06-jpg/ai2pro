@@ -1316,6 +1316,9 @@ fun MainScreen() {
                             if (workInfos.any { it.outputData.getString(KEY_PENDING_ENHANCED_FILE)?.let { path -> File(path).isFile } == true }) {
                                 TextButton(onClick = { page = MainPage.QUEUE }) { Text("Review result") }
                             }
+                            if (workInfos.any { it.state == WorkInfo.State.SUCCEEDED || it.state == WorkInfo.State.FAILED || it.state == WorkInfo.State.CANCELLED }) {
+                                TextButton(onClick = { page = MainPage.QUEUE }) { Text("History") }
+                            }
                         }
                     }
                 }
