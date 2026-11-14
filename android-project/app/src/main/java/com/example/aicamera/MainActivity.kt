@@ -298,8 +298,7 @@ object Api {
             deviceId = json.optString("device_id")
             user = json.getString("name")
             accountCode = clean
-            isAdmin = json.optBoolean("admin", false)
-            user
+            validate()
         }
     }
 
