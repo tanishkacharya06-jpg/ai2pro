@@ -249,6 +249,12 @@ def disconnect_device(req: Request):
             if device and device["install_hash"]:
                 c.execute("DELETE FROM device_installations WHERE installation_hash=? AND user_name=?",
                           (device["install_hash"], device["user_name"]))
+                # Retire the account's original installation link too. Otherwise,
+                # createOrRestoreDeviceProfile could fall back to account_profiles and
+                # silently restore the just-logged-out account on this same phone.
+                retired_hash = hashlib.sha256(("retired:" + uuid.uuid4().hex).encode()).hexdigest()
+                c.execute("UPDATE account_profiles SET installation_hash=? WHERE user_name=? AND installation_hash=?",
+                          (retired_hash, device["user_name"], device["install_hash"]))
     return {"ok": True}
 
 @app.post("/api/devices/{device_id}/revoke")
