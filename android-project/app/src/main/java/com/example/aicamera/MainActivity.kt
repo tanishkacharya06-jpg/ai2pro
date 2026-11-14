@@ -774,23 +774,26 @@ private fun CapturePreviewDialog(
 @Composable
 private fun GalleryScreen(
     files: List<File>,
+    pendingNames: Set<String>,
+    revealAnimation: Boolean,
     onBack: () -> Unit,
     onImport: () -> Unit,
     onOpen: (File) -> Unit
 ) {
-    Column(Modifier.fillMaxSize().background(Color(0xFF120B1F)).padding(horizontal = 14.dp)) {
-        Row(Modifier.fillMaxWidth().padding(top = 14.dp, bottom = 12.dp), verticalAlignment = Alignment.CenterVertically) {
-            TextButton(onClick = onBack) { Text("‹ Camera") }
+    Column(Modifier.fillMaxSize().background(Color(0xFF090A0F)).padding(horizontal = 14.dp)) {
+        Row(Modifier.fillMaxWidth().padding(top = 18.dp, bottom = 14.dp), verticalAlignment = Alignment.CenterVertically) {
+            TextButton(onClick = onBack) { Text("‹ Camera", color = Color.White) }
             Spacer(Modifier.weight(1f))
-            Text("Gallery", style = MaterialTheme.typography.titleLarge, color = Color.White)
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Text("Gallery", style = MaterialTheme.typography.titleLarge, color = Color.White)
+                Text("${files.size} photos", color = Color.Gray, style = MaterialTheme.typography.labelSmall)
+            }
             Spacer(Modifier.weight(1f))
-            TextButton(onClick = onImport) { Text("Import") }
+            TextButton(onClick = onImport) { Text("+ Import", color = Color(0xFFFFB4CB)) }
         }
-        Text("${files.size} photos · newest first", color = Color.LightGray, style = MaterialTheme.typography.bodySmall,
-            modifier = Modifier.padding(bottom = 12.dp))
         if (files.isEmpty()) {
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                Text("No saved photos yet", color = Color.Gray)
+                Text("No photos yet. Capture your first moment.", color = Color.Gray)
             }
         } else {
             LazyVerticalGrid(
@@ -801,13 +804,52 @@ private fun GalleryScreen(
             ) {
                 itemsIndexed(files, key = { _, file -> file.name }) { _, file ->
                     val bitmap = rememberPhotoBitmap(file, 4)
+                    val pending = file.name in pendingNames
+                    val blur by animateDpAsState(
+                        targetValue = if (pending) 14.dp else 0.dp,
+                        animationSpec = if (revealAnimation) tween(700) else androidx.compose.animation.core.snap(),
+                        label = "gallery-photo-reveal"
+                    )
                     Surface(
                         modifier = Modifier.fillMaxWidth().aspectRatio(1f).clickable { onOpen(file) },
-                        shape = RoundedCornerShape(12.dp),
-                        color = Color(0xFF2B2037)
+                        shape = RoundedCornerShape(14.dp),
+                        color = Color(0xFF17191F)
                     ) {
-                        if (bitmap != null) Image(bitmap.asImageBitmap(), null, Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
-                        else Box(contentAlignment = Alignment.Center) { CircularProgressIndicator() }
+                        Box {
+                            if (bitmap != null) {
+                                Image(
+                                    bitmap.asImageBitmap(), null,
+                                    Modifier.fillMaxSize().blur(blur),
+                                    contentScale = ContentScale.Crop
+                                )
+                            } else {
+                                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                                    CircularProgressIndicator()
+                                }
+                            }
+                            if (pending) {
+                                Row(
+                                    Modifier.align(Alignment.BottomCenter).fillMaxWidth()
+                                        .background(Color(0xAA08090D)).padding(7.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.Center
+                                ) {
+                                    CircularProgressIndicator(Modifier.size(12.dp), strokeWidth = 2.dp)
+                                    Spacer(Modifier.width(6.dp))
+                                    Text("Enhancing", color = Color.White, style = MaterialTheme.typography.labelSmall)
+                                }
+                            } else if (revealAnimation && GalleryStorage.isEnhanced(LocalContext.current, file)) {
+                                AnimatedVisibility(
+                                    visible = true,
+                                    enter = slideInHorizontally(initialOffsetX = { it / 3 }) + fadeIn(tween(420)),
+                                    modifier = Modifier.align(Alignment.BottomEnd)
+                                ) {
+                                    Text("ENHANCED", Modifier.padding(6.dp)
+                                        .background(Color(0xCC151820), RoundedCornerShape(8.dp)).padding(horizontal = 7.dp, vertical = 4.dp),
+                                        color = Color(0xFFFFB5CB), style = MaterialTheme.typography.labelSmall)
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -819,7 +861,11 @@ private fun GalleryScreen(
 private fun PhotoViewer(
     files: List<File>,
     startFile: File,
+    pendingNames: Set<String>,
     onClose: () -> Unit,
+    onEdit: (File) -> Unit,
+    onDelete: (File) -> Unit,
+    onExport: (File) -> Unit,
     onEnhance: (File) -> Unit,
     onRevert: (File) -> Unit
 ) {
@@ -827,6 +873,8 @@ private fun PhotoViewer(
     var index by remember(files, startFile) { mutableIntStateOf(files.indexOf(startFile).coerceAtLeast(0)) }
     val current = files.getOrNull(index) ?: startFile
     val bitmap = rememberPhotoBitmap(current, 1)
+    val isPending = current.name in pendingNames
+    val isEnhanced = remember(current, current.lastModified()) { GalleryStorage.isEnhanced(context, current) }
     val canRevert = remember(current) { GalleryStorage.hasOriginalBackup(context, current) }
     var scale by remember(current) { mutableFloatStateOf(1f) }
     var offset by remember(current) { mutableStateOf(Offset.Zero) }
@@ -890,21 +938,38 @@ private fun PhotoViewer(
             TextButton(onClick = onClose, modifier = Modifier.align(Alignment.TopStart).padding(10.dp)) {
                 Text("✕ Close", color = Color.White)
             }
-            Text("Pinch or double-tap to zoom", color = Color.White.copy(alpha = 0.75f),
-                modifier = Modifier.align(Alignment.TopCenter).padding(top = 20.dp))
             Column(Modifier.align(Alignment.BottomCenter).fillMaxWidth().padding(12.dp)) {
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center) {
-                    TextButton(onClick = { onEnhance(current); onClose() }) { Text("Enhance", color = Color.White) }
-                    if (canRevert) TextButton(onClick = { onRevert(current); onClose() }) {
-                        Text("Revert original", color = Color.White)
+                if (isPending) {
+                    Text("Enhancement in progress…", color = Color(0xFFFFB5CB),
+                        modifier = Modifier.align(Alignment.CenterHorizontally).padding(bottom = 8.dp))
+                }
+                Row(
+                    Modifier.fillMaxWidth().background(Color(0xCC11131A), RoundedCornerShape(18.dp)).padding(4.dp),
+                    horizontalArrangement = Arrangement.SpaceEvenly,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    TextButton(onClick = { onEdit(current); onClose() }) { Text("Edit", color = Color.White) }
+                    TextButton(onClick = { onDelete(current); onClose() }) { Text("🗑", color = Color(0xFFFF8F9B)) }
+                    TextButton(onClick = { onExport(current) }) { Text("Export", color = Color.White) }
+                    if (!isEnhanced && !isPending) {
+                        TextButton(onClick = { onEnhance(current); onClose() }) { Text("Enhance", color = Color(0xFFFFB5CB)) }
+                    } else if (isEnhanced) {
+                        Text("Enhanced", color = Color(0xFFFFB5CB), modifier = Modifier.padding(horizontal = 8.dp))
                     }
+                    if (canRevert) TextButton(onClick = { onRevert(current); onClose() }) { Text("Revert", color = Color.White) }
                 }
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically) {
-                    TextButton(enabled = index > 0, onClick = { index--; }) { Text("‹ Previous", color = Color.White) }
+                    TextButton(enabled = index > 0, onClick = { index--; scale = 1f; offset = Offset.Zero }) {
+                        Text("‹ Previous", color = Color.White)
+                    }
                     Text("${index + 1} / ${files.size}", color = Color.White)
-                    TextButton(enabled = index < files.lastIndex, onClick = { index++; }) { Text("Next ›", color = Color.White) }
+                    TextButton(enabled = index < files.lastIndex, onClick = { index++; scale = 1f; offset = Offset.Zero }) {
+                        Text("Next ›", color = Color.White)
+                    }
                 }
+                Text("Swipe to navigate · pinch or double-tap to zoom", color = Color.LightGray,
+                    style = MaterialTheme.typography.labelSmall, modifier = Modifier.align(Alignment.CenterHorizontally))
             }
         }
     }
