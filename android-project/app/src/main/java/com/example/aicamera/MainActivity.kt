@@ -857,24 +857,39 @@ private fun PhotoEditor(file: File, onClose: () -> Unit, onSaved: () -> Unit) {
     var cropRatio by remember(file) { mutableStateOf("Original") }
     var resizePercent by remember(file) { mutableIntStateOf(100) }
     var saving by remember { mutableStateOf(false) }
+    var processing by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf("") }
 
     LaunchedEffect(file) {
         working = withContext(Dispatchers.IO) {
             val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
             BitmapFactory.decodeFile(file.absolutePath, bounds)
-            val sample = maxOf(1, Integer.highestOneBit(maxOf(bounds.outWidth, bounds.outHeight) / 4096))
+            val maxDimension = maxOf(bounds.outWidth, bounds.outHeight)
+            var sample = 1
+            while (maxDimension / sample > 3072) sample *= 2
             BitmapFactory.decodeFile(file.absolutePath, BitmapFactory.Options().apply { inSampleSize = sample })
         }
     }
     fun commit(next: Bitmap) {
-        working?.let { undo.add(copyBitmap(it)); if (undo.size > 15) undo.removeAt(0) }
+        working?.let { undo.add(it); if (undo.size > 3) undo.removeAt(0) }
         redo.clear()
         working = next
     }
+    fun performTransform(transform: (Bitmap) -> Bitmap) {
+        val source = working ?: return
+        if (processing || saving) return
+        scope.launch {
+            processing = true
+            try {
+                val next = withContext(Dispatchers.IO) { transform(source) }
+                commit(next)
+            } catch (e: Exception) { error = e.message ?: "Could not apply edit" }
+            finally { processing = false }
+        }
+    }
     fun applyAdjustments() {
-        val current = working ?: return
-        commit(transformBitmap(current, brightness, contrast, saturation, sharpness, filter))
+        val b = brightness; val cValue = contrast; val s = saturation; val sh = sharpness; val selectedFilter = filter
+        performTransform { transformBitmap(it, b, cValue, s, sh, selectedFilter) }
     }
 
     Dialog(onDismissRequest = { if (!saving) onClose() }, properties = DialogProperties(usePlatformDefaultWidth = false)) {
@@ -902,7 +917,7 @@ private fun PhotoEditor(file: File, onClose: () -> Unit, onSaved: () -> Unit) {
                         } catch (e: Exception) { error = e.message ?: "Unable to save edits" }
                         finally { saving = false }
                     }
-                }, enabled = working != null && !saving) { Text(if (saving) "Saving…" else "Save") }
+                }, enabled = working != null && !saving && !processing) { Text(if (saving) "Saving…" else "Save") }
             }
             if (working == null) {
                 Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
@@ -910,10 +925,10 @@ private fun PhotoEditor(file: File, onClose: () -> Unit, onSaved: () -> Unit) {
                 Image(working!!.asImageBitmap(), null, Modifier.fillMaxWidth().weight(1f).padding(vertical = 8.dp),
                     contentScale = ContentScale.Fit)
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    OutlinedButton(onClick = { if (undo.isNotEmpty()) { redo.add(copyBitmap(working!!)); working = undo.removeAt(undo.lastIndex) } },
-                        enabled = undo.isNotEmpty()) { Text("↶ Undo") }
-                    OutlinedButton(onClick = { if (redo.isNotEmpty()) { undo.add(copyBitmap(working!!)); working = redo.removeAt(redo.lastIndex) } },
-                        enabled = redo.isNotEmpty()) { Text("↷ Redo") }
+                    OutlinedButton(onClick = { if (undo.isNotEmpty()) { redo.add(working!!); working = undo.removeAt(undo.lastIndex) } },
+                        enabled = undo.isNotEmpty() && !processing) { Text("↶ Undo") }
+                    OutlinedButton(onClick = { if (redo.isNotEmpty()) { undo.add(working!!); working = redo.removeAt(redo.lastIndex) } },
+                        enabled = redo.isNotEmpty() && !processing) { Text("↷ Redo") }
                     Spacer(Modifier.weight(1f))
                     Text("${working!!.width} × ${working!!.height}", color = Color.LightGray, modifier = Modifier.align(Alignment.CenterVertically))
                 }
@@ -921,23 +936,23 @@ private fun PhotoEditor(file: File, onClose: () -> Unit, onSaved: () -> Unit) {
                     item {
                         Text("Transform", color = Color.White, style = MaterialTheme.typography.titleMedium)
                         Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                            OutlinedButton(onClick = { working?.let { commit(rotateBitmap(it, -90f)) } }) { Text("Rotate ↶") }
-                            OutlinedButton(onClick = { working?.let { commit(rotateBitmap(it, 90f)) } }) { Text("Rotate ↷") }
-                            OutlinedButton(onClick = { working?.let { commit(flipBitmap(it)) } }) { Text("Flip") }
+                            OutlinedButton(enabled = !processing, onClick = { performTransform { rotateBitmap(it, -90f) } }) { Text("Rotate ↶") }
+                            OutlinedButton(enabled = !processing, onClick = { performTransform { rotateBitmap(it, 90f) } }) { Text("Rotate ↷") }
+                            OutlinedButton(enabled = !processing, onClick = { performTransform { flipBitmap(it) } }) { Text("Flip") }
                         }
                         Text("Crop ratio", color = Color.LightGray)
                         Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                             listOf("Original", "1:1", "4:5", "16:9").forEach { ratio ->
                                 FilterChip(selected = cropRatio == ratio, onClick = { cropRatio = ratio }, label = { Text(ratio) })
                             }
-                            Button(onClick = { working?.let { commit(cropBitmap(it, cropRatio)) } }, enabled = cropRatio != "Original") { Text("Crop") }
+                            Button(onClick = { performTransform { cropBitmap(it, cropRatio) } }, enabled = cropRatio != "Original" && !processing) { Text("Crop") }
                         }
                         Text("Resize", color = Color.LightGray)
                         Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                             listOf(50, 75, 100, 125, 150, 200).forEach { value ->
                                 FilterChip(selected = resizePercent == value, onClick = { resizePercent = value }, label = { Text("$value%") })
                             }
-                            Button(onClick = { working?.let { commit(resizeBitmap(it, resizePercent)) } }) { Text("Apply") }
+                            Button(onClick = { performTransform { resizeBitmap(it, resizePercent) } }, enabled = !processing) { Text("Apply") }
                         }
                     }
                     item {
@@ -950,7 +965,7 @@ private fun PhotoEditor(file: File, onClose: () -> Unit, onSaved: () -> Unit) {
                         Slider(value = saturation, onValueChange = { saturation = it }, valueRange = 0f..2f)
                         Text("Sharpness · ${"%.2f".format(sharpness)}", color = Color.LightGray)
                         Slider(value = sharpness, onValueChange = { sharpness = it }, valueRange = 0f..1.5f)
-                        Button(onClick = { applyAdjustments() }) { Text("Apply adjustments") }
+                        Button(onClick = { applyAdjustments() }, enabled = !processing) { Text("Apply adjustments") }
                     }
                     item {
                         Text("Filters", color = Color.White, style = MaterialTheme.typography.titleMedium)
@@ -958,13 +973,13 @@ private fun PhotoEditor(file: File, onClose: () -> Unit, onSaved: () -> Unit) {
                             listOf("Original", "Mono", "Warm", "Cool", "Vintage").forEach { name ->
                                 FilterChip(selected = filter == name, onClick = { filter = name }, label = { Text(name) })
                             }
-                            Button(onClick = { applyAdjustments() }) { Text("Apply filter") }
+                            Button(onClick = { applyAdjustments() }, enabled = !processing) { Text("Apply filter") }
                         }
                     }
                 }
             }
             if (error.isNotBlank()) Text(error, color = Color(0xFFFF8E9E), modifier = Modifier.padding(6.dp))
-            if (saving) LinearProgressIndicator(Modifier.fillMaxWidth())
+            if (saving || processing) LinearProgressIndicator(Modifier.fillMaxWidth())
         }
     }
 }
