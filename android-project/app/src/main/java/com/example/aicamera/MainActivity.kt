@@ -363,12 +363,13 @@ object Api {
         http.newCall(rq(path).delete().build()).execute().use { check(it) }
     }
 
-    private fun uploadLocalPhoto(file: File) {
+    private fun uploadLocalPhoto(context: Context, file: File) {
         if (!file.isFile || sid.isBlank()) return
         val mime = when (file.extension.lowercase()) { "png" -> "image/png"; "webp" -> "image/webp"; else -> "image/jpeg" }
         val body = MultipartBody.Builder().setType(MultipartBody.FORM)
             .addFormDataPart("name", file.name)
             .addFormDataPart("modified", file.lastModified().toString())
+            .addFormDataPart("enhanced", GalleryStorage.isEnhanced(context, file).toString())
             .addFormDataPart("photo", file.name, file.asRequestBody(mime.toMediaType())).build()
         http.newCall(rq("/api/gallery/upload").post(body).build()).execute().use { check(it) }
     }
@@ -380,16 +381,19 @@ object Api {
             JSONArray(r.body!!.string())
         }
         val remote = mutableMapOf<String, Long>()
+        val remoteEnhanced = mutableMapOf<String, Boolean>()
         for (i in 0 until index.length()) {
             val item = index.getJSONObject(i)
-            remote[item.getString("name")] = item.optLong("modified", 0L)
+            val name = item.getString("name")
+            remote[name] = item.optLong("modified", 0L)
+            remoteEnhanced[name] = item.optInt("enhanced", 0) == 1
         }
         val localFiles = GalleryStorage.list(context)
         var changed = 0
         for (file in localFiles) {
             val cloudModified = remote[file.name]
             if (cloudModified == null || file.lastModified() > cloudModified + 1000L) {
-                uploadLocalPhoto(file)
+                uploadLocalPhoto(context, file)
                 changed++
             }
         }
@@ -406,7 +410,8 @@ object Api {
                         check(r)
                         temp.outputStream().use { out -> r.body!!.byteStream().copyTo(out) }
                     }
-                    GalleryStorage.importRemote(context, temp, name, modified)
+                    val downloaded = GalleryStorage.importRemote(context, temp, name, modified)
+                    if (remoteEnhanced[name] == true) GalleryStorage.markEnhanced(context, downloaded)
                     changed++
                 } finally { temp.delete() }
             }
