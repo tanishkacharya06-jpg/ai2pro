@@ -875,6 +875,7 @@ private fun EnhancementQueueScreen(
                     val taskOutcome = info.outputData.getString(KEY_TASK_STATUS).orEmpty()
                     val pendingPath = info.outputData.getString(KEY_PENDING_ENHANCED_FILE).orEmpty()
                     val pendingFile = pendingPath.takeIf { it.isNotBlank() }?.let(::File)
+                    val enhancedThumb = pendingFile?.takeIf { it.isFile }?.let { rememberPhotoBitmap(it, 8) }
                     val hasPendingChoice = taskOutcome == "completed" && pendingFile?.isFile == true
                     val taskFailed = taskOutcome == "failed" || info.state == WorkInfo.State.FAILED
                     val status = when {
@@ -921,7 +922,11 @@ private fun EnhancementQueueScreen(
                                 }
                             }
                             if (hasPendingChoice) {
-                                Text("Which photo do you want to keep?", color = Color.White, modifier = Modifier.padding(top = 10.dp))
+                                Text("Enhanced preview · choose which version to keep", color = Color.White, modifier = Modifier.padding(top = 10.dp))
+                                if (enhancedThumb != null) {
+                                    Image(enhancedThumb.asImageBitmap(), null, Modifier.fillMaxWidth().height(170.dp),
+                                        contentScale = ContentScale.Fit)
+                                }
                                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                                     OutlinedButton(modifier = Modifier.weight(1f), onClick = { onKeepOriginal(info) }) { Text("Original") }
                                     Button(modifier = Modifier.weight(1f), onClick = { onKeepEnhanced(info) }) { Text("Enhanced") }
