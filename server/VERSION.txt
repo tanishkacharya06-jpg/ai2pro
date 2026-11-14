@@ -1,4 +1,6 @@
-AI Camera server v1.9
-- Keeps the v1.6 account, pairing, prompt, and enhancement API behavior.
-- Supports idempotent enhancement request IDs so persistent Android queue retries can resume an in-flight job without duplicating it.
-- Android app version 1.7 stores originals before queueing and saves enhanced outputs separately.
+AI Camera server v2.0
+- Four-digit USER<N> account code creation and code-only account switching.
+- Admin code unlock (default 0007) and server-side prompt management.
+- Account-separated cloud gallery with enhanced-state metadata and photo deletion.
+- Background gallery upload sync and offline deletion retry.
+- Existing ChatGPT website/Playwright enhancement engine and ntfy + Cloudflare URL discovery preserved.
