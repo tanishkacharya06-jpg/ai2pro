@@ -57,6 +57,15 @@ def init():
         if not c.execute("SELECT 1 FROM prompts").fetchone():
             c.execute("INSERT INTO prompts(name,text) VALUES(?,?)",
                       ("High Quality Image", (HERE / "PROMPT.txt").read_text(encoding="utf-8")))
+        # Fixed bootstrap code requested for the built-in admin account; login attempts
+        # continue through the same per-IP throttle as other 4-digit account codes.
+        admin_digest = hashlib.sha256(b"0007").hexdigest()
+        admin_install = hashlib.sha256(b"aicamera-admin-bootstrap-v1").hexdigest()
+        c.execute(
+            "INSERT OR IGNORE INTO account_profiles(user_name,code_hash,installation_hash,created) VALUES(?,?,?,?)",
+            ("admin", admin_digest, admin_install, time.time())
+        )
+        c.execute("UPDATE account_profiles SET code_hash=? WHERE user_name='admin'", (admin_digest,))
         # The requested admin account uses the fixed 4-digit code 0007.
         # Login is still rate-limited and immediately receives a revocable device token.
         admin_code_hash = hashlib.sha256(b"0007").hexdigest()
