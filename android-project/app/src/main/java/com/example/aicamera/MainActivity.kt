@@ -1389,42 +1389,42 @@ fun MainScreen() {
     fun savePreview(enhance: Boolean) {
         val source = pendingPhoto ?: return
         if (savingPhoto) return
-        // Dismiss the preview instantly; all file and network work continues asynchronously.
+        // Close the preview immediately; the work below happens asynchronously.
         pendingPhoto = null
         savingPhoto = true
         val promptForPhoto = selectedPrompt
         val selectedAspect = aspectMode
         scope.launch {
             var framed: File? = null
+            var saved: File? = null
+            var succeeded = false
             try {
-                val saved = withContext(Dispatchers.IO) {
+                saved = withContext(Dispatchers.IO) {
                     framed = cropPhotoForAspect(source, selectedAspect, context.cacheDir)
                     GalleryStorage.save(context, framed ?: source, "original")
                 }
                 if (enhance) {
-                    withContext(Dispatchers.IO) { GalleryStorage.ensureOriginalBackup(context, saved) }
-                    enqueueEnhancement(context, saved, promptForPhoto)
+                    withContext(Dispatchers.IO) { GalleryStorage.ensureOriginalBackup(context, saved!!) }
+                    enqueueEnhancement(context, saved!!, promptForPhoto)
                 }
                 enqueueGallerySync(context)
-                Toast.makeText(
-                    context,
-                    if (enhance) "Saved · enhancing in background" else "Photo saved",
-                    Toast.LENGTH_SHORT
-                ).show()
+                succeeded = true
+                Toast.makeText(context, if (enhance) "Saved · enhancing in background" else "Photo saved",
+                    Toast.LENGTH_SHORT).show()
                 if (page == MainPage.GALLERY) {
                     galleryFiles = withContext(Dispatchers.IO) { GalleryStorage.list(context) }
                 }
             } catch (e: Exception) {
                 message = e.message ?: "Unable to save photo"
-                if (source.exists()) pendingPhoto = source
+                if (saved != null) withContext(Dispatchers.IO) { GalleryStorage.deletePhoto(context, saved!!) }
+                pendingPhoto = source
             } finally {
                 if (framed != null && framed != source) framed?.delete()
-                source.delete()
+                if (succeeded) source.delete()
                 savingPhoto = false
             }
         }
     }
-
 
 
     fun showAccountCode() {
