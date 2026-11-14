@@ -51,6 +51,8 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.launch
+import androidx.compose.runtime.rememberCoroutineScope
 
 @Composable
 fun PhotoEditorScreen(
@@ -67,6 +69,7 @@ fun PhotoEditorScreen(
     var saving by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf("") }
     val context = LocalContext.current
+    val scope = rememberCoroutineScope()
 
     LaunchedEffect(file) {
         bitmap = withContext(Dispatchers.IO) { runCatching { loadBmp(file, 2) }.getOrNull() }
@@ -74,17 +77,7 @@ fun PhotoEditorScreen(
     }
 
     val composeMatrix = remember(brightness, contrast, saturation) {
-        val c = contrast
-        val b = brightness * 255f
-        val values = floatArrayOf(
-            c, 0f, 0f, 0f, b,
-            0f, c, 0f, 0f, b,
-            0f, 0f, c, 0f, b,
-            0f, 0f, 0f, 1f, 0f
-        )
-        val combined = AndroidColorMatrix(values)
-        combined.postConcat(AndroidColorMatrix().apply { setSaturation(saturation) })
-        ColorFilter.colorMatrix(ColorMatrix(combined.array))
+        ColorFilter.colorMatrix(ColorMatrix(photoEditColorValues(brightness, contrast, saturation)))
     }
 
     Column(Modifier.fillMaxSize().background(Color(0xFF0C0D12)).padding(16.dp)) {
@@ -141,7 +134,7 @@ fun PhotoEditorScreen(
                 saving = true
                 error = ""
                 // The full-resolution render runs on the IO dispatcher; the editor stays responsive.
-                kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.Main).launchSafe {
+                scope.launch {
                     try {
                         val edited = withContext(Dispatchers.IO) {
                             renderEditedPhoto(file, context.cacheDir, rotation, mirrored, brightness, contrast, saturation)
@@ -174,15 +167,7 @@ private fun renderEditedPhoto(
     val rotated = Bitmap.createBitmap(input, 0, 0, input.width, input.height, transform, true)
     if (rotated !== input) input.recycle()
     val output = Bitmap.createBitmap(rotated.width, rotated.height, Bitmap.Config.ARGB_8888)
-    val c = contrast
-    val b = brightness * 255f
-    val matrix = AndroidColorMatrix(floatArrayOf(
-        c, 0f, 0f, 0f, b,
-        0f, c, 0f, 0f, b,
-        0f, 0f, c, 0f, b,
-        0f, 0f, 0f, 1f, 0f
-    ))
-    matrix.postConcat(AndroidColorMatrix().apply { setSaturation(saturation) })
+    val matrix = AndroidColorMatrix(photoEditColorValues(brightness, contrast, saturation))
     val paint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG).apply {
         colorFilter = ColorMatrixColorFilter(matrix)
     }
@@ -198,6 +183,17 @@ private fun renderEditedPhoto(
     return target
 }
 
-private fun kotlinx.coroutines.CoroutineScope.launchSafe(block: suspend () -> Unit) {
-    launch { block() }
+private fun photoEditColorValues(brightness: Float, contrast: Float, saturation: Float): FloatArray {
+    val inv = 1f - saturation
+    val r = 0.213f * inv
+    val g = 0.715f * inv
+    val b = 0.072f * inv
+    val c = contrast
+    val shift = brightness * 255f
+    return floatArrayOf(
+        (r + saturation) * c, g * c, b * c, 0f, shift,
+        r * c, (g + saturation) * c, b * c, 0f, shift,
+        r * c, g * c, (b + saturation) * c, 0f, shift,
+        0f, 0f, 0f, 1f, 0f
+    )
 }
