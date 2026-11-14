@@ -742,6 +742,8 @@ private fun CapturePreviewDialog(
 @Composable
 private fun GalleryScreen(
     files: List<File>,
+    pendingPaths: Set<String>,
+    revealAnimationEnabled: Boolean,
     onBack: () -> Unit,
     onImport: () -> Unit,
     onOpen: (File) -> Unit
@@ -769,13 +771,47 @@ private fun GalleryScreen(
             ) {
                 itemsIndexed(files, key = { _, file -> file.name }) { _, file ->
                     val bitmap = rememberPhotoBitmap(file, 4)
+                    val isPending = pendingPaths.contains(file.absolutePath)
+                    val reveal by animateFloatAsState(
+                        targetValue = if (isPending || !revealAnimationEnabled) 0f else 1f,
+                        animationSpec = tween(if (revealAnimationEnabled) 700 else 0),
+                        label = "photoReveal"
+                    )
+                    val blurAmount by animateDpAsState(
+                        targetValue = if (isPending) 16.dp else 0.dp,
+                        animationSpec = tween(if (revealAnimationEnabled) 700 else 0),
+                        label = "photoBlur"
+                    )
                     Surface(
                         modifier = Modifier.fillMaxWidth().aspectRatio(1f).clickable { onOpen(file) },
                         shape = RoundedCornerShape(12.dp),
                         color = Color(0xFF2B2037)
                     ) {
-                        if (bitmap != null) Image(bitmap.asImageBitmap(), null, Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
-                        else Box(contentAlignment = Alignment.Center) { CircularProgressIndicator() }
+                        if (bitmap != null) {
+                            Box(Modifier.fillMaxSize()) {
+                                Image(
+                                    bitmap.asImageBitmap(),
+                                    null,
+                                    Modifier.fillMaxSize()
+                                        .blur(blurAmount)
+                                        .graphicsLayer {
+                                            alpha = if (isPending) 0.58f else if (revealAnimationEnabled) reveal else 1f
+                                            translationX = if (!isPending && revealAnimationEnabled) (1f - reveal) * size.width * 0.12f else 0f
+                                        },
+                                    contentScale = ContentScale.Crop
+                                )
+                                if (isPending) {
+                                    Surface(
+                                        color = Color(0x990A0A0C),
+                                        shape = RoundedCornerShape(20.dp),
+                                        modifier = Modifier.align(Alignment.BottomCenter).padding(6.dp)
+                                    ) {
+                                        Text("Enhancing…", color = Color.White, style = MaterialTheme.typography.labelSmall,
+                                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp))
+                                    }
+                                }
+                            }
+                        } else Box(contentAlignment = Alignment.Center) { CircularProgressIndicator() }
                     }
                 }
             }
@@ -789,7 +825,10 @@ private fun PhotoViewer(
     startFile: File,
     onClose: () -> Unit,
     onEnhance: (File) -> Unit,
-    onRevert: (File) -> Unit
+    onRevert: (File) -> Unit,
+    onEdit: (File) -> Unit,
+    onDelete: (File) -> Unit,
+    onExport: (File) -> Unit
 ) {
     val context = LocalContext.current
     var index by remember(files, startFile) { mutableIntStateOf(files.indexOf(startFile).coerceAtLeast(0)) }
@@ -798,6 +837,7 @@ private fun PhotoViewer(
     val canRevert = remember(current) { GalleryStorage.hasOriginalBackup(context, current) }
     var scale by remember(current) { mutableFloatStateOf(1f) }
     var offset by remember(current) { mutableStateOf(Offset.Zero) }
+    var confirmDelete by remember(current) { mutableStateOf(false) }
 
     Dialog(onDismissRequest = onClose, properties = DialogProperties(usePlatformDefaultWidth = false)) {
         Box(
@@ -861,10 +901,30 @@ private fun PhotoViewer(
             Text("Pinch or double-tap to zoom", color = Color.White.copy(alpha = 0.75f),
                 modifier = Modifier.align(Alignment.TopCenter).padding(top = 20.dp))
             Column(Modifier.align(Alignment.BottomCenter).fillMaxWidth().padding(12.dp)) {
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center) {
-                    TextButton(onClick = { onEnhance(current); onClose() }) { Text("Enhance", color = Color.White) }
-                    if (canRevert) TextButton(onClick = { onRevert(current); onClose() }) {
-                        Text("Revert original", color = Color.White)
+                Surface(color = Color(0xCC15151B), shape = RoundedCornerShape(18.dp)) {
+                    Row(
+                        Modifier.fillMaxWidth().padding(horizontal = 6.dp, vertical = 4.dp),
+                        horizontalArrangement = Arrangement.SpaceEvenly,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        TextButton(onClick = { onEdit(current); onClose() }) {
+                            Text("✎ Edit", color = Color.White)
+                        }
+                        TextButton(onClick = { confirmDelete = true }) {
+                            Text("🗑 Delete", color = Color(0xFFFF8A9C))
+                        }
+                        TextButton(onClick = { onExport(current); onClose() }) {
+                            Text("⇧ Export", color = Color.White)
+                        }
+                        if (!canRevert) {
+                            TextButton(onClick = { onEnhance(current); onClose() }) {
+                                Text("✧ Enhance", color = Color(0xFFFFB5CE))
+                            }
+                        } else {
+                            TextButton(onClick = { onRevert(current); onClose() }) {
+                                Text("↶ Revert", color = Color.White)
+                            }
+                        }
                     }
                 }
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween,
@@ -875,6 +935,19 @@ private fun PhotoViewer(
                 }
             }
         }
+    }
+    if (confirmDelete) {
+        AlertDialog(
+            onDismissRequest = { confirmDelete = false },
+            title = { Text("Delete photo?") },
+            text = { Text("This removes the photo and its private original backup from this account.") },
+            confirmButton = {
+                TextButton(onClick = { confirmDelete = false; onDelete(current); onClose() }) {
+                    Text("Delete", color = Color(0xFFFF8A9C))
+                }
+            },
+            dismissButton = { TextButton(onClick = { confirmDelete = false }) { Text("Cancel") } }
+        )
     }
 }
 
