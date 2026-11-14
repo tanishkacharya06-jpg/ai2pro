@@ -1447,6 +1447,7 @@ fun MainScreen() {
 
     fun showAccountCode() {
         if (accountBusy) return
+        if (Api.isAdmin) { accountCode = "0007"; return }
         if (Api.accountCode.isNotBlank()) { accountCode = Api.accountCode; return }
         accountBusy = true
         accountError = ""
@@ -1750,7 +1751,7 @@ fun MainScreen() {
                     onEnhance = { file ->
                         scope.launch {
                             try {
-                                GalleryStorage.ensureOriginalBackup(context, file)
+                                                GalleryStorage.ensureOriginalBackup(context, file)
                                 enqueueEnhancement(context, file, selectedPrompt)
                                 Toast.makeText(context, "Enhancement started in background", Toast.LENGTH_SHORT).show()
                             } catch (e: Exception) { message = e.message ?: "Unable to queue enhancement" }
@@ -1803,6 +1804,14 @@ fun MainScreen() {
             serverOnline = serverOnline,
             checkingServer = checkingServer,
             onRefreshServer = { refreshServer() },
+            activeQueueCount = workInfos.count {
+                it.state == WorkInfo.State.ENQUEUED || it.state == WorkInfo.State.BLOCKED || it.state == WorkInfo.State.RUNNING
+            },
+            onViewQueue = {
+                settingsOpen = false
+                page = MainPage.QUEUE
+            },
+            onCancelSwitch = { accountSwitchReady = false },
             timerSeconds = timerSeconds,
             gridMode = gridMode,
             onTimerChange = {
@@ -1843,6 +1852,9 @@ private fun CameraSettingsDialog(
     serverOnline: Boolean?,
     checkingServer: Boolean,
     onRefreshServer: () -> Unit,
+    activeQueueCount: Int,
+    onViewQueue: () -> Unit,
+    onCancelSwitch: () -> Unit,
     timerSeconds: Int,
     gridMode: Int,
     onTimerChange: (Int) -> Unit,
@@ -1870,9 +1882,13 @@ private fun CameraSettingsDialog(
     var promptError by remember { mutableStateOf("") }
     var deletePromptId by remember { mutableIntStateOf(0) }
 
-    LaunchedEffect(switchReady) { if (switchReady) showLoginDialog = true }
-    LaunchedEffect(accountName) {
-        if (accountName.isNotBlank()) { showLoginDialog = false; enteredCode = "" }
+    LaunchedEffect(switchReady, accountName) {
+        if (switchReady) {
+            showLoginDialog = true
+        } else if (accountName.isNotBlank()) {
+            showLoginDialog = false
+            enteredCode = ""
+        }
     }
 
     Dialog(onDismissRequest = onClose, properties = DialogProperties(usePlatformDefaultWidth = false)) {
@@ -1951,6 +1967,11 @@ private fun CameraSettingsDialog(
                     }
 
                     SettingsCard(title = "Photos", subtitle = "Gallery and enhancement appearance") {
+                        if (activeQueueCount >= 2) {
+                            Button(onClick = onViewQueue, modifier = Modifier.fillMaxWidth()) {
+                                Text("Enhancement Queue · $activeQueueCount tasks")
+                            }
+                        }
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Column(Modifier.weight(1f)) {
                                 Text("Enhanced reveal animation", color = Color.White)
@@ -2094,7 +2115,10 @@ private fun CameraSettingsDialog(
                     Text(if (accountBusy) "Connecting…" else "Login")
                 }
             },
-            dismissButton = { TextButton(enabled = !accountBusy, onClick = { showLoginDialog = false }) { Text("Cancel") } }
+            dismissButton = { TextButton(enabled = !accountBusy, onClick = {
+                showLoginDialog = false
+                onCancelSwitch()
+            }) { Text("Cancel") } }
         )
     }
 
