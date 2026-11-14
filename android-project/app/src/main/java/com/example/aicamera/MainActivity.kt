@@ -846,7 +846,8 @@ private fun EnhancementQueueScreen(
     onCancel: (WorkInfo) -> Unit, onClearHistory: (List<WorkInfo>) -> Unit,
     onKeepOriginal: (WorkInfo) -> Unit, onKeepEnhanced: (WorkInfo) -> Unit,
     onKeepBoth: (WorkInfo) -> Unit
-) {
+ ) {
+    val context = LocalContext.current
     val history = items.filter { it.state == WorkInfo.State.SUCCEEDED || it.state == WorkInfo.State.FAILED || it.state == WorkInfo.State.CANCELLED }
     Column(Modifier.fillMaxSize().background(Color(0xFF120B1F)).padding(16.dp)) {
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
@@ -869,6 +870,8 @@ private fun EnhancementQueueScreen(
         } else {
             LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 itemsIndexed(items, key = { _, info -> info.id.toString() }) { _, info ->
+                    val metadata = loadEnhancementTaskMetadata(context, info.id)
+                    val sourceThumb = metadata?.let { rememberPhotoBitmap(File(it.sourceFile), 8) }
                     val taskOutcome = info.outputData.getString(KEY_TASK_STATUS).orEmpty()
                     val pendingPath = info.outputData.getString(KEY_PENDING_ENHANCED_FILE).orEmpty()
                     val pendingFile = pendingPath.takeIf { it.isNotBlank() }?.let(::File)
@@ -887,8 +890,14 @@ private fun EnhancementQueueScreen(
                     Card(colors = CardDefaults.cardColors(containerColor = Color(0xFF281E34))) {
                         Column(Modifier.fillMaxWidth().padding(14.dp)) {
                             Row(verticalAlignment = Alignment.CenterVertically) {
-                                Text("Photo enhancement", color = Color.White, style = MaterialTheme.typography.titleMedium)
-                                Spacer(Modifier.weight(1f))
+                                if (sourceThumb != null) {
+                                    Image(sourceThumb.asImageBitmap(), null, Modifier.size(54.dp), contentScale = ContentScale.Crop)
+                                    Spacer(Modifier.width(10.dp))
+                                }
+                                Column(Modifier.weight(1f)) {
+                                    Text("Photo enhancement", color = Color.White, style = MaterialTheme.typography.titleMedium)
+                                    metadata?.let { Text(File(it.sourceFile).name, color = Color.LightGray, style = MaterialTheme.typography.labelSmall, maxLines = 1) }
+                                }
                                 Text(status, color = if (taskFailed) Color(0xFFFF8797) else Color(0xFFFFB5CE))
                             }
                             val stage = info.progress.getString(KEY_STAGE).orEmpty()
@@ -1277,6 +1286,11 @@ fun MainScreen() {
                     .background(Color(0xA50E0916)).padding(bottom = 22.dp, top = 12.dp),
                     horizontalAlignment = Alignment.CenterHorizontally) {
                     Chips(prompts, selectedPrompt) { selectedPrompt = it; Api.pid = it }
+                    workInfos.firstOrNull { it.state == WorkInfo.State.RUNNING }?.let { activeTask ->
+                        LinearProgressIndicator(Modifier.fillMaxWidth().padding(horizontal = 18.dp))
+                        Text(activeTask.progress.getString(KEY_STAGE).orEmpty().ifBlank { "Enhancing photo in background" },
+                            color = Color(0xFFFFB5CE), style = MaterialTheme.typography.labelSmall)
+                    }
                     Spacer(Modifier.height(14.dp))
                     Row(Modifier.fillMaxWidth().padding(horizontal = 18.dp), verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.SpaceBetween) {
