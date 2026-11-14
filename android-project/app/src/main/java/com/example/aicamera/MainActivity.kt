@@ -1631,7 +1631,7 @@ fun MainScreen() {
 }
 
 @Composable
-private fun CameraSettingsDialog(
+private fun CameraSettingsScreen(
     accountName: String,
     accountCode: String,
     accountBusy: Boolean,
@@ -1648,70 +1648,162 @@ private fun CameraSettingsDialog(
     gridMode: Int,
     onTimerChange: (Int) -> Unit,
     onGridChange: (Int) -> Unit,
-    onClose: () -> Unit
+    photoAnimationEnabled: Boolean,
+    onPhotoAnimationChange: (Boolean) -> Unit,
+    prompts: List<Pair<Int, String>>,
+    selectedPrompt: Int,
+    onPromptChange: (Int) -> Unit,
+    isAdmin: Boolean,
+    onManagePrompts: () -> Unit,
+    onBack: () -> Unit
 ) {
     var showCodeDialog by remember { mutableStateOf(false) }
     var showLogoutWarning by remember { mutableStateOf(false) }
     var showLoginDialog by remember { mutableStateOf(false) }
     var savedCodeConfirmed by remember { mutableStateOf(false) }
     var enteredCode by remember { mutableStateOf("") }
+
     LaunchedEffect(switchReady) { if (switchReady) showLoginDialog = true }
     LaunchedEffect(accountName) {
         if (accountName.isNotBlank()) { showLoginDialog = false; enteredCode = "" }
     }
-    AlertDialog(
-        onDismissRequest = onClose,
-        title = { Text("Camera settings") },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text("My Account", style = MaterialTheme.typography.labelMedium, color = Color.Gray)
-                Text(accountName.ifBlank { "Creating your account when the server is online…" }, style = MaterialTheme.typography.titleMedium)
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    OutlinedButton(enabled = !accountBusy, onClick = { showCodeDialog = true; onShowCode() }) { Text("Show Code") }
-                    Button(enabled = !accountBusy, onClick = { savedCodeConfirmed = false; showLogoutWarning = true }) {
-                        Text("Login Another Account")
-                    }
-                }
-                if (accountError.isNotBlank()) Text(accountError, color = Color(0xFFFFAAB6), style = MaterialTheme.typography.bodySmall)
-                Text("Server status", style = MaterialTheme.typography.labelMedium, color = Color.Gray)
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    val statusColor = when (serverOnline) {
-                        true -> Color(0xFF69D69A)
-                        false -> Color(0xFFFF8797)
-                        null -> Color.LightGray
-                    }
-                    Box(Modifier.size(9.dp).background(statusColor, CircleShape))
-                    Spacer(Modifier.width(8.dp))
-                    Text(serverStatus, color = statusColor, style = MaterialTheme.typography.bodyMedium)
-                    Spacer(Modifier.weight(1f))
-                    TextButton(enabled = !checkingServer, onClick = onRefreshServer) {
-                        Text(if (checkingServer) "Checking…" else "Refresh")
-                    }
-                }
-                Text("Capture timer")
-                Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
-                    listOf(0, 3, 5, 10).forEach { seconds ->
-                        TextButton(onClick = { onTimerChange(seconds) }) {
-                            val label = if (seconds == 0) "Off" else "${seconds}s"
-                            Text((if (timerSeconds == seconds) "✓ " else "") + label)
+
+    Column(Modifier.fillMaxSize().background(Color(0xFF0C0D12)).systemBarsPadding()) {
+        Row(
+            Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            TextButton(onClick = onBack) { Text("‹ Back", color = Color.White) }
+            Spacer(Modifier.weight(1f))
+            Text("Settings", color = Color.White, style = MaterialTheme.typography.titleLarge)
+            Spacer(Modifier.weight(1f))
+            Spacer(Modifier.width(52.dp))
+        }
+        LazyColumn(
+            modifier = Modifier.fillMaxSize(),
+            contentPadding = PaddingValues(start = 16.dp, end = 16.dp, bottom = 32.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            item {
+                Card(colors = CardDefaults.cardColors(containerColor = Color(0xFF1C1D25))) {
+                    Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Text("MY ACCOUNT", color = Color(0xFFFFB5CE), style = MaterialTheme.typography.labelMedium)
+                        Text(accountName.ifBlank { "Account not connected" }, color = Color.White, style = MaterialTheme.typography.titleLarge)
+                        Text("Your 4-digit account code is the only code needed to open this account on another device.",
+                            color = Color.LightGray, style = MaterialTheme.typography.bodySmall)
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            OutlinedButton(enabled = !accountBusy && accountName.isNotBlank(), onClick = {
+                                showCodeDialog = true
+                                onShowCode()
+                            }, modifier = Modifier.weight(1f)) { Text("Show Code") }
+                            Button(enabled = !accountBusy, onClick = {
+                                savedCodeConfirmed = false
+                                showLogoutWarning = true
+                            }, modifier = Modifier.weight(1f)) { Text("Login Another Account") }
+                        }
+                        if (accountError.isNotBlank()) {
+                            Text(accountError, color = Color(0xFFFFAAB6), style = MaterialTheme.typography.bodySmall)
                         }
                     }
                 }
-                Text("Composition grid")
-                Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
-                    listOf(0, 3, 4, 5).forEach { mode ->
-                        val label = when (mode) { 0 -> "Off"; 3 -> "3×3"; 4 -> "4×4"; else -> "Golden" }
-                        TextButton(onClick = { onGridChange(mode) }) {
-                            Text((if (gridMode == mode) "✓ " else "") + label)
-                        }
-                    }
-                }
-                Text("Tap the preview to focus. Flashlight is available only on devices with a flash.",
-                    color = Color.Gray, style = MaterialTheme.typography.bodySmall)
             }
-        },
-        confirmButton = { TextButton(onClick = onClose) { Text("Done") } }
-    )
+            item {
+                Card(colors = CardDefaults.cardColors(containerColor = Color(0xFF1C1D25))) {
+                    Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Text("SERVER STATUS", color = Color(0xFFFFB5CE), style = MaterialTheme.typography.labelMedium)
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            val statusColor = when (serverOnline) {
+                                true -> Color(0xFF69D69A)
+                                false -> Color(0xFFFF8797)
+                                null -> Color.LightGray
+                            }
+                            Box(Modifier.size(10.dp).background(statusColor, CircleShape))
+                            Spacer(Modifier.width(10.dp))
+                            Text(serverStatus, color = statusColor, style = MaterialTheme.typography.titleMedium)
+                            Spacer(Modifier.weight(1f))
+                            TextButton(enabled = !checkingServer, onClick = onRefreshServer) {
+                                Text(if (checkingServer) "Checking…" else "Refresh")
+                            }
+                        }
+                        Text("Server discovery remains automatic. Camera and local gallery remain usable while offline.",
+                            color = Color.Gray, style = MaterialTheme.typography.bodySmall)
+                    }
+                }
+            }
+            item {
+                Card(colors = CardDefaults.cardColors(containerColor = Color(0xFF1C1D25))) {
+                    Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text("PHOTO SETTINGS", color = Color(0xFFFFB5CE), style = MaterialTheme.typography.labelMedium)
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Column(Modifier.weight(1f)) {
+                                Text("Enhanced photo reveal", color = Color.White)
+                                Text("Slide the blurred thumbnail into the enhanced image when processing finishes.",
+                                    color = Color.Gray, style = MaterialTheme.typography.bodySmall)
+                            }
+                            Switch(checked = photoAnimationEnabled, onCheckedChange = onPhotoAnimationChange)
+                        }
+                        Divider(color = Color(0xFF383946))
+                        Text("About images", color = Color.White, style = MaterialTheme.typography.titleMedium)
+                        Text("Photos are saved locally first. When a connection is available, they are backed up to the active account. Original copies used for Revert are kept privately and do not appear as separate gallery items.",
+                            color = Color.Gray, style = MaterialTheme.typography.bodySmall)
+                    }
+                }
+            }
+            item {
+                Card(colors = CardDefaults.cardColors(containerColor = Color(0xFF1C1D25))) {
+                    Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Text("CAMERA SETTINGS", color = Color(0xFFFFB5CE), style = MaterialTheme.typography.labelMedium)
+                        Text("Capture timer", color = Color.White)
+                        Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
+                            listOf(0, 3, 5, 10).forEach { seconds ->
+                                TextButton(onClick = { onTimerChange(seconds) }) {
+                                    val label = if (seconds == 0) "Off" else "\${seconds}s"
+                                    Text((if (timerSeconds == seconds) "✓ " else "") + label)
+                                }
+                            }
+                        }
+                        Divider(color = Color(0xFF383946))
+                        Text("Composition grid", color = Color.White)
+                        Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
+                            listOf(0, 3, 4, 5).forEach { mode ->
+                                val label = when (mode) { 0 -> "Off"; 3 -> "3×3"; 4 -> "4×4"; else -> "Golden" }
+                                TextButton(onClick = { onGridChange(mode) }) {
+                                    Text((if (gridMode == mode) "✓ " else "") + label)
+                                }
+                            }
+                        }
+                        Text("Preview ratio is selected directly on the camera screen: 9:16, 3:4, 1:1 or Full.",
+                            color = Color.Gray, style = MaterialTheme.typography.bodySmall)
+                    }
+                }
+            }
+            item {
+                Card(colors = CardDefaults.cardColors(containerColor = Color(0xFF1C1D25))) {
+                    Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text("AI ENHANCEMENT", color = Color(0xFFFFB5CE), style = MaterialTheme.typography.labelMedium)
+                        Text("Default prompt", color = Color.White)
+                        if (prompts.isEmpty()) Text("No prompts available while offline.", color = Color.Gray)
+                        else Chips(prompts, selectedPrompt, onPromptChange)
+                        if (isAdmin) {
+                            Button(onClick = onManagePrompts, modifier = Modifier.fillMaxWidth()) {
+                                Text("Manage prompts")
+                            }
+                        }
+                    }
+                }
+            }
+            item {
+                Card(colors = CardDefaults.cardColors(containerColor = Color(0xFF1C1D25))) {
+                    Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Text("ABOUT AI CAMERA", color = Color(0xFFFFB5CE), style = MaterialTheme.typography.labelMedium)
+                        Text("AI Camera · v2.0", color = Color.White, style = MaterialTheme.typography.titleMedium)
+                        Text("Camera, private gallery, editing, enhancement queue and account photo backup.",
+                            color = Color.Gray, style = MaterialTheme.typography.bodySmall)
+                    }
+                }
+            }
+        }
+    }
 
     if (showCodeDialog) {
         AlertDialog(
@@ -1722,14 +1814,13 @@ private fun CameraSettingsDialog(
                     Text("Save this 4-digit code. It is the only information needed to log in to this account on another device.")
                     Text(if (accountCode.length == 4) accountCode else if (accountBusy) "Loading…" else "Code unavailable",
                         style = MaterialTheme.typography.headlineLarge, color = Color(0xFFFFB5CE))
-                    Text("Keep this code private. Anyone with it can access your account gallery.",
+                    Text("Keep this code private. Anyone with it can access this account's gallery.",
                         color = Color.Gray, style = MaterialTheme.typography.bodySmall)
                 }
             },
             confirmButton = { TextButton(onClick = { showCodeDialog = false }) { Text("Done") } }
         )
     }
-
     if (showLogoutWarning) {
         AlertDialog(
             onDismissRequest = { if (!accountBusy) showLogoutWarning = false },
@@ -1752,7 +1843,6 @@ private fun CameraSettingsDialog(
             dismissButton = { TextButton(enabled = !accountBusy, onClick = { showLogoutWarning = false }) { Text("Cancel") } }
         )
     }
-
     if (showLoginDialog) {
         AlertDialog(
             onDismissRequest = { if (!accountBusy) showLoginDialog = false },
@@ -1775,6 +1865,97 @@ private fun CameraSettingsDialog(
                 }
             },
             dismissButton = { TextButton(enabled = !accountBusy, onClick = { showLoginDialog = false }) { Text("Cancel") } }
+        )
+    }
+}
+
+@Composable
+private fun AdminPromptsScreen(
+    prompts: List<PromptEntry>,
+    busy: Boolean,
+    error: String,
+    onBack: () -> Unit,
+    onSave: (Int?, String, String) -> Unit,
+    onDelete: (Int) -> Unit
+) {
+    var editing by remember { mutableStateOf<PromptEntry?>(null) }
+    var creating by remember { mutableStateOf(false) }
+    var deleting by remember { mutableStateOf<PromptEntry?>(null) }
+    var name by remember { mutableStateOf("") }
+    var promptText by remember { mutableStateOf("") }
+    Column(Modifier.fillMaxSize().background(Color(0xFF0C0D12)).systemBarsPadding().padding(16.dp)) {
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            TextButton(onClick = onBack) { Text("‹ Settings", color = Color.White) }
+            Spacer(Modifier.weight(1f))
+            Text("Prompt manager", color = Color.White, style = MaterialTheme.typography.titleLarge)
+            Spacer(Modifier.weight(1f))
+            Spacer(Modifier.width(56.dp))
+        }
+        Button(enabled = !busy, onClick = {
+            editing = null
+            creating = true
+            name = ""
+            promptText = ""
+        }, modifier = Modifier.fillMaxWidth()) { Text("+ Add prompt") }
+        if (error.isNotBlank()) Text(error, color = Color(0xFFFF8797), modifier = Modifier.padding(vertical = 8.dp))
+        if (busy) LinearProgressIndicator(Modifier.fillMaxWidth())
+        LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxSize()) {
+            itemsIndexed(prompts, key = { _, p -> p.id }) { _, p ->
+                Card(colors = CardDefaults.cardColors(containerColor = Color(0xFF1C1D25))) {
+                    Column(Modifier.fillMaxWidth().padding(14.dp)) {
+                        Text(p.name, color = Color.White, style = MaterialTheme.typography.titleMedium)
+                        Text(p.text, color = Color.Gray, style = MaterialTheme.typography.bodySmall, maxLines = 3)
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            OutlinedButton(enabled = !busy, onClick = {
+                                editing = p
+                                creating = false
+                                name = p.name
+                                promptText = p.text
+                            }) { Text("Edit") }
+                            TextButton(enabled = !busy, onClick = { deleting = p }) {
+                                Text("Delete", color = Color(0xFFFF8797))
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    if (creating || editing != null) {
+        AlertDialog(
+            onDismissRequest = { if (!busy) { creating = false; editing = null } },
+            title = { Text(if (creating) "Add prompt" else "Edit prompt") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedTextField(value = name, onValueChange = { name = it }, label = { Text("Prompt name") }, singleLine = true)
+                    OutlinedTextField(value = promptText, onValueChange = { promptText = it },
+                        label = { Text("Prompt text") }, minLines = 5, maxLines = 8)
+                }
+            },
+            confirmButton = {
+                TextButton(enabled = !busy && name.isNotBlank() && promptText.isNotBlank(), onClick = {
+                    onSave(editing?.id, name.trim(), promptText.trim())
+                    creating = false
+                    editing = null
+                }) { Text("Save") }
+            },
+            dismissButton = {
+                TextButton(enabled = !busy, onClick = { creating = false; editing = null }) { Text("Cancel") }
+            }
+        )
+    }
+    if (deleting != null) {
+        AlertDialog(
+            onDismissRequest = { deleting = null },
+            title = { Text("Delete prompt?") },
+            text = { Text("The selected prompt will be removed from the website and app.") },
+            confirmButton = {
+                TextButton(enabled = !busy, onClick = {
+                    deleting?.let { onDelete(it.id) }
+                    deleting = null
+                }) { Text("Delete", color = Color(0xFFFF8797)) }
+            },
+            dismissButton = { TextButton(onClick = { deleting = null }) { Text("Cancel") } }
         )
     }
 }
