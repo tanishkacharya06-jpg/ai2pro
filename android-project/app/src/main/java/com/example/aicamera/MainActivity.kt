@@ -1862,6 +1862,31 @@ fun MainScreen() {
             onClose = { settingsOpen = false }
         )
     }
+
+    editingPhoto?.let { file ->
+        PhotoEditorDialog(
+            file = file,
+            onCancel = { editingPhoto = null },
+            onSave = { output ->
+                scope.launch {
+                    try {
+                        withContext(Dispatchers.IO) {
+                            GalleryStorage.ensureOriginalBackup(context, file)
+                            GalleryStorage.replacePrimary(context, file, output)
+                        }
+                        enqueueGallerySync(context)
+                        galleryFiles = withContext(Dispatchers.IO) { GalleryStorage.list(context) }
+                        editingPhoto = null
+                        output.delete()
+                        Toast.makeText(context, "Edits saved", Toast.LENGTH_SHORT).show()
+                    } catch (e: Exception) {
+                        message = e.message ?: "Could not save edits"
+                    }
+                }
+            }
+        )
+    }
+
 }
 
 @Composable
@@ -2194,29 +2219,6 @@ private fun SettingsCard(title: String, subtitle: String, content: @Composable C
             content()
         }
 
-    editingPhoto?.let { file ->
-        PhotoEditorDialog(
-            file = file,
-            onCancel = { editingPhoto = null },
-            onSave = { output ->
-                scope.launch {
-                    try {
-                        withContext(Dispatchers.IO) {
-                            GalleryStorage.ensureOriginalBackup(context, file)
-                            GalleryStorage.replacePrimary(context, file, output)
-                        }
-                        enqueueGallerySync(context)
-                        galleryFiles = withContext(Dispatchers.IO) { GalleryStorage.list(context) }
-                        editingPhoto = null
-                        output.delete()
-                        Toast.makeText(context, "Edits saved", Toast.LENGTH_SHORT).show()
-                    } catch (e: Exception) {
-                        message = e.message ?: "Could not save edits"
-                    }
-                }
-            }
-        )
-    }
     }
 }
 
