@@ -107,6 +107,8 @@ object GalleryStorage {
         if (!backup.isFile) throw IOException("No saved original is available for this photo")
         copyAtomically(backup, primary)
         publishToMediaStore(context, primary)
+        // Revert consumes the enhanced-state backup; the original can be enhanced again later.
+        backup.delete()
     }
 
     /** Enhancement results are PNG; convert to the primary file's extension before replacing. */
