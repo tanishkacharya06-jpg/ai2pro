@@ -47,7 +47,22 @@ def init():
         CREATE TABLE IF NOT EXISTS device_installations(installation_hash TEXT PRIMARY KEY, user_name TEXT NOT NULL,
             updated REAL NOT NULL);
         CREATE TABLE IF NOT EXISTS cloud_gallery(user_name TEXT NOT NULL, name TEXT NOT NULL, file_path TEXT NOT NULL,
-            modified INTEGER NOT NULL, updated REAL NOT NULL, size INTEGER NOT NULL, PRIMARY KEY(user_name,name));""")
+            modified INTEGER NOT NULL, updated REAL NOT NULL, size INTEGER NOT NULL, enhanced INTEGER DEFAULT 0,
+            PRIMARY KEY(user_name,name));""")
+        gallery_columns = {row["name"] for row in c.execute("PRAGMA table_info(cloud_gallery)").fetchall()}
+        if "enhanced" not in gallery_columns:
+            c.execute("ALTER TABLE cloud_gallery ADD COLUMN enhanced INTEGER DEFAULT 0")
+        # Ensure that a real administrator account exists for the mobile 0007 unlock.
+        admin = c.execute("SELECT name FROM users WHERE admin=1 LIMIT 1").fetchone()
+        if not admin:
+            existing = c.execute("SELECT name FROM users WHERE name='admin'").fetchone()
+            if existing:
+                c.execute("UPDATE users SET admin=1 WHERE name=?", (existing["name"],))
+            else:
+                admin_salt = secrets.token_hex(16)
+                admin_password = secrets.token_urlsafe(36)
+                c.execute("INSERT INTO users(name,salt,pw,admin) VALUES(?,?,?,1)",
+                          ("admin", admin_salt, hashpw(admin_password, admin_salt)))
         device_columns = {row["name"] for row in c.execute("PRAGMA table_info(devices)").fetchall()}
         if "install_hash" not in device_columns:
             c.execute("ALTER TABLE devices ADD COLUMN install_hash TEXT")
@@ -486,12 +501,13 @@ def regenerate_account_code(req: Request):
 def cloud_gallery_index(req: Request):
     u = user_of(req)
     with db() as c:
-        rows = c.execute("SELECT name,modified,updated,size FROM cloud_gallery WHERE user_name=? ORDER BY modified DESC",
+        rows = c.execute("SELECT name,modified,updated,size,enhanced FROM cloud_gallery WHERE user_name=? ORDER BY modified DESC",
                          (u["name"],)).fetchall()
     return [dict(row) for row in rows]
 
 @app.post("/api/gallery/upload")
-async def cloud_gallery_upload(req: Request, photo: UploadFile, name: str = Form(...), modified: int = Form(0)):
+async def cloud_gallery_upload(req: Request, photo: UploadFile, name: str = Form(...),
+                               modified: int = Form(0), enhanced: bool = Form(False)):
     u = user_of(req)
     safe_name = pathlib.PurePath(name).name
     if not safe_name or safe_name != name or len(safe_name) > 180:
@@ -512,9 +528,9 @@ async def cloud_gallery_upload(req: Request, photo: UploadFile, name: str = Form
         temp.write_bytes(data)
         os.replace(temp, path)
         timestamp = modified if modified > 0 else int(time.time() * 1000)
-        c.execute("INSERT INTO cloud_gallery(user_name,name,file_path,modified,updated,size) VALUES(?,?,?,?,?,?) "
-                  "ON CONFLICT(user_name,name) DO UPDATE SET file_path=excluded.file_path,modified=excluded.modified,updated=excluded.updated,size=excluded.size",
-                  (u["name"], safe_name, str(path), timestamp, time.time(), len(data)))
+        c.execute("INSERT INTO cloud_gallery(user_name,name,file_path,modified,updated,size,enhanced) VALUES(?,?,?,?,?,?,?) "
+                  "ON CONFLICT(user_name,name) DO UPDATE SET file_path=excluded.file_path,modified=excluded.modified,updated=excluded.updated,size=excluded.size,enhanced=excluded.enhanced",
+                  (u["name"], safe_name, str(path), timestamp, time.time(), len(data), int(enhanced)))
     return {"ok": True, "name": safe_name, "modified": timestamp, "size": len(data)}
 
 
