@@ -23,7 +23,8 @@ data class EnhancementTaskMetadata(
     val sourceFile: String,
     val promptId: Int,
     val requestId: String,
-    val createdAt: Long
+    val createdAt: Long,
+    val accountName: String
 )
 
 fun loadEnhancementTaskMetadata(context: Context, workId: UUID): EnhancementTaskMetadata? {
@@ -35,7 +36,8 @@ fun loadEnhancementTaskMetadata(context: Context, workId: UUID): EnhancementTask
             sourceFile = value.getString(KEY_SOURCE_FILE),
             promptId = value.getInt(KEY_PROMPT_ID),
             requestId = value.getString(KEY_REQUEST_ID),
-            createdAt = value.getLong(KEY_CREATED_AT)
+            createdAt = value.getLong(KEY_CREATED_AT),
+            accountName = value.optString(KEY_ACCOUNT_NAME)
         )
     } catch (_: Exception) { null }
 }
@@ -46,6 +48,7 @@ const val KEY_SOURCE_FILE = "source_file"
 const val KEY_PROMPT_ID = "prompt_id"
 const val KEY_REQUEST_ID = "request_id"
 const val KEY_CREATED_AT = "created_at"
+const val KEY_ACCOUNT_NAME = "account_name"
 const val KEY_STAGE = "stage"
 const val KEY_ERROR = "error"
 const val KEY_TASK_STATUS = "task_status"
@@ -59,7 +62,8 @@ fun enqueueEnhancement(
     context: Context,
     source: File,
     promptId: Int,
-    requestId: String = UUID.randomUUID().toString()
+    requestId: String = UUID.randomUUID().toString(),
+    accountName: String = Api.user
 ): UUID {
     val constraints = Constraints.Builder()
         .setRequiredNetworkType(NetworkType.CONNECTED)
@@ -70,7 +74,8 @@ fun enqueueEnhancement(
             KEY_SOURCE_FILE to source.absolutePath,
             KEY_PROMPT_ID to promptId,
             KEY_REQUEST_ID to requestId,
-            KEY_CREATED_AT to createdAt
+            KEY_CREATED_AT to createdAt,
+            KEY_ACCOUNT_NAME to accountName
         ))
         .setConstraints(constraints)
         .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 15, TimeUnit.SECONDS)
@@ -83,6 +88,7 @@ fun enqueueEnhancement(
         put(KEY_PROMPT_ID, promptId)
         put(KEY_REQUEST_ID, requestId)
         put(KEY_CREATED_AT, createdAt)
+        put(KEY_ACCOUNT_NAME, accountName)
     }
     context.applicationContext.getSharedPreferences(QUEUE_PREFS, Context.MODE_PRIVATE)
         .edit().putString(QUEUE_META_PREFIX + request.id, metadata.toString()).apply()
@@ -107,6 +113,11 @@ class EnhancementWorker(
         }
 
         Api.initialize(applicationContext)
+        val expectedAccount = inputData.getString(KEY_ACCOUNT_NAME).orEmpty()
+        if (expectedAccount.isNotBlank() && Api.user != expectedAccount) {
+            setProgress(workDataOf(KEY_STAGE to "Waiting for account $expectedAccount to be selected on this device"))
+            return Result.retry()
+        }
         return try {
             setProgress(workDataOf(KEY_STAGE to "Connecting to enhancement server"))
             val outputs = Api.process(source, promptId, applicationContext.cacheDir, requestId) { message ->
