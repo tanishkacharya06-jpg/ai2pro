@@ -963,6 +963,7 @@ fun MainScreen() {
     var maxZoomRatio by remember { mutableFloatStateOf(1f) }
     var pendingPhoto by remember { mutableStateOf<File?>(null) }
     var savingPhoto by remember { mutableStateOf(false) }
+    var applyingResult by remember { mutableStateOf(false) }
     var captureRunning by remember { mutableStateOf(false) }
     var galleryFiles by remember { mutableStateOf(listOf<File>()) }
     var viewerFiles by remember { mutableStateOf<List<File>?>(null) }
@@ -1401,22 +1402,36 @@ fun MainScreen() {
                     Toast.makeText(context, "Original photo kept", Toast.LENGTH_SHORT).show()
                 },
                 onKeepEnhanced = { info ->
-                    val source = info.outputData.getString(KEY_SOURCE_FILE).orEmpty()
-                    val pending = info.outputData.getString(KEY_PENDING_ENHANCED_FILE).orEmpty()
-                    try {
-                        GalleryStorage.applyPendingEnhancement(context, File(source), File(pending), false)
-                        scope.launch { runCatching { Api.syncGallery(context) }; galleryFiles = withContext(Dispatchers.IO) { GalleryStorage.list(context) } }
-                        Toast.makeText(context, "Enhanced photo saved", Toast.LENGTH_SHORT).show()
-                    } catch (e: Exception) { message = e.message ?: "Could not save enhanced photo" }
+                    if (!applyingResult) {
+                        applyingResult = true
+                        val source = info.outputData.getString(KEY_SOURCE_FILE).orEmpty()
+                        val pending = info.outputData.getString(KEY_PENDING_ENHANCED_FILE).orEmpty()
+                        scope.launch {
+                            try {
+                                withContext(Dispatchers.IO) { GalleryStorage.applyPendingEnhancement(context, File(source), File(pending), false) }
+                                runCatching { Api.syncGallery(context) }
+                                galleryFiles = withContext(Dispatchers.IO) { GalleryStorage.list(context) }
+                                Toast.makeText(context, "Enhanced photo saved", Toast.LENGTH_SHORT).show()
+                            } catch (e: Exception) { message = e.message ?: "Could not save enhanced photo" }
+                            finally { applyingResult = false }
+                        }
+                    }
                 },
                 onKeepBoth = { info ->
-                    val source = info.outputData.getString(KEY_SOURCE_FILE).orEmpty()
-                    val pending = info.outputData.getString(KEY_PENDING_ENHANCED_FILE).orEmpty()
-                    try {
-                        GalleryStorage.applyPendingEnhancement(context, File(source), File(pending), true)
-                        scope.launch { runCatching { Api.syncGallery(context) }; galleryFiles = withContext(Dispatchers.IO) { GalleryStorage.list(context) } }
-                        Toast.makeText(context, "Enhanced photo saved; original kept for Revert", Toast.LENGTH_SHORT).show()
-                    } catch (e: Exception) { message = e.message ?: "Could not save both versions" }
+                    if (!applyingResult) {
+                        applyingResult = true
+                        val source = info.outputData.getString(KEY_SOURCE_FILE).orEmpty()
+                        val pending = info.outputData.getString(KEY_PENDING_ENHANCED_FILE).orEmpty()
+                        scope.launch {
+                            try {
+                                withContext(Dispatchers.IO) { GalleryStorage.applyPendingEnhancement(context, File(source), File(pending), true) }
+                                runCatching { Api.syncGallery(context) }
+                                galleryFiles = withContext(Dispatchers.IO) { GalleryStorage.list(context) }
+                                Toast.makeText(context, "Enhanced photo saved; original kept for Revert", Toast.LENGTH_SHORT).show()
+                            } catch (e: Exception) { message = e.message ?: "Could not save both versions" }
+                            finally { applyingResult = false }
+                        }
+                    }
                 }
             )
         }
