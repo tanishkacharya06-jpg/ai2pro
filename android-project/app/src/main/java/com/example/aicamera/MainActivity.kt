@@ -282,6 +282,7 @@ object Api {
             sid = json.getString("device_token")
             deviceId = json.optString("device_id")
             user = json.getString("name")
+            isAdmin = false
             val code = json.optString("code")
             if (code.length == 4) accountCode = code
             user
@@ -300,6 +301,7 @@ object Api {
             sid = json.getString("device_token")
             deviceId = json.optString("device_id")
             user = json.getString("name")
+            isAdmin = false
             accountCode = clean
             user
         }
