@@ -25,6 +25,13 @@ import androidx.camera.core.ImageCaptureException
 import androidx.camera.core.Preview
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.togetherWith
+import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.tween
@@ -44,12 +51,14 @@ import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
@@ -96,6 +105,8 @@ import java.util.UUID
 import java.util.concurrent.TimeUnit
 import kotlin.math.roundToInt
 import kotlin.math.abs
+import kotlin.math.max
+import kotlin.math.min
 
 const val DEFAULT_LINK = "aicam-dc66661a0788dd75"   // must equal PAIR_CODE in the server's startup.bat
 
@@ -622,7 +633,8 @@ fun Compare(before: Bitmap, after: Bitmap, animate: Boolean) {
 
 @Composable
 private fun rememberPhotoBitmap(file: File, sampleSize: Int = 1): Bitmap? {
-    val bitmap by produceState<Bitmap?>(initialValue = null, file, sampleSize) {
+    val modified = file.lastModified()
+    val bitmap by produceState<Bitmap?>(initialValue = null, file, sampleSize, modified) {
         value = withContext(Dispatchers.IO) { runCatching { loadBmp(file, sampleSize) }.getOrNull() }
     }
     return bitmap
@@ -632,6 +644,7 @@ private fun rememberPhotoBitmap(file: File, sampleSize: Int = 1): Bitmap? {
 private fun CameraPreview(
     capture: ImageCapture,
     frontFacing: Boolean,
+    previewAspectRatio: Float?,
     onCameraReady: (Camera?, Float, Float) -> Unit,
     onFacingFallback: () -> Unit,
     onZoomGesture: (Float) -> Unit,
@@ -661,10 +674,21 @@ private fun CameraPreview(
             }
         }
     ) {
+        val previewModifier = if (previewAspectRatio == null) {
+            Modifier.fillMaxSize()
+        } else {
+            Modifier.fillMaxWidth().aspectRatio(previewAspectRatio).align(Alignment.Center)
+        }
         AndroidView(
-            modifier = Modifier.fillMaxSize(),
-            factory = { c -> PreviewView(c).also { previewView = it } },
-            update = { previewView = it }
+            modifier = previewModifier,
+            factory = { c -> PreviewView(c).also {
+                it.scaleType = PreviewView.ScaleType.FILL_CENTER
+                previewView = it
+            } },
+            update = {
+                it.scaleType = PreviewView.ScaleType.FILL_CENTER
+                previewView = it
+            }
         )
     }
 
