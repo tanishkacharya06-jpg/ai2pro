@@ -1521,7 +1521,6 @@ fun MainScreen() {
                 }
             )
         }
-    }
         MainPage.EDITOR -> {
             val file = editingPhoto
             if (file == null) {
