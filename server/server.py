@@ -9,7 +9,7 @@ from PIL import Image, ImageOps
 import tunnel
 
 VERSION = "2.0"
-ENGINE = os.getenv("ENGINE", "echo")                       # chatgpt | openai | echo
+ENGINE = os.getenv("ENGINE", "chatgpt")                       # chatgpt | openai | echo
 LEGACY_TOKEN = os.getenv("APP_TOKEN")                      # optional: keeps the old Android app working
 ALLOW_SIGNUP = os.getenv("ALLOW_SIGNUP", "1") == "1"       # set 0 to stop new accounts
 TTL = 900
@@ -57,28 +57,32 @@ def init():
         if not c.execute("SELECT 1 FROM prompts").fetchone():
             c.execute("INSERT INTO prompts(name,text) VALUES(?,?)",
                       ("High Quality Image", (HERE / "PROMPT.txt").read_text(encoding="utf-8")))
-        # Fixed bootstrap code requested for the built-in admin account; login attempts
-        # continue through the same per-IP throttle as other 4-digit account codes.
-        admin_digest = hashlib.sha256(b"0007").hexdigest()
-        admin_install = hashlib.sha256(b"aicamera-admin-bootstrap-v1").hexdigest()
-        c.execute(
-            "INSERT OR IGNORE INTO account_profiles(user_name,code_hash,installation_hash,created) VALUES(?,?,?,?)",
-            ("admin", admin_digest, admin_install, time.time())
-        )
-        c.execute("UPDATE account_profiles SET code_hash=? WHERE user_name='admin'", (admin_digest,))
-        # The requested admin account uses the fixed 4-digit code 0007.
-        # Login is still rate-limited and immediately receives a revocable device token.
+        # Ensure the built-in admin exists even when the database already contains
+        # ordinary users. Mobile admin login uses the requested 4-digit code 0007.
+        admin_user = c.execute("SELECT name FROM users WHERE name='admin' COLLATE NOCASE").fetchone()
+        if not admin_user:
+            admin_salt = secrets.token_hex(8)
+            admin_password = secrets.token_urlsafe(32)
+            c.execute("INSERT INTO users(name,salt,pw,admin) VALUES('admin',?,?,1)",
+                      (admin_salt, hashpw(admin_password, admin_salt)))
+        else:
+            c.execute("UPDATE users SET admin=1 WHERE name='admin' COLLATE NOCASE")
         admin_code_hash = hashlib.sha256(b"0007").hexdigest()
         conflict = c.execute("SELECT user_name FROM account_profiles WHERE code_hash=? AND user_name!='admin'",
                              (admin_code_hash,)).fetchone()
         if conflict:
-            replacement = f"{secrets.randbelow(10000):04d}"
+            # Reserve 0007 for the admin; reassign the rare conflicting 4-digit code.
+            while True:
+                replacement = f"{secrets.randbelow(10000):04d}"
+                replacement_hash = hashlib.sha256(replacement.encode()).hexdigest()
+                if not c.execute("SELECT 1 FROM account_profiles WHERE code_hash=?", (replacement_hash,)).fetchone():
+                    break
             c.execute("UPDATE account_profiles SET code_hash=? WHERE user_name=?",
-                      (hashlib.sha256(replacement.encode()).hexdigest(), conflict["user_name"]))
-        admin_install_hash = hashlib.sha256(b"aicamera-admin-profile-v1").hexdigest()
+                      (replacement_hash, conflict["user_name"]))
+        admin_install_hash = hashlib.sha256(b"aicamera-admin-profile-v2").hexdigest()
         c.execute(
             "INSERT INTO account_profiles(user_name,code_hash,installation_hash,created) VALUES('admin',?,?,?) "
-            "ON CONFLICT(user_name) DO UPDATE SET code_hash=excluded.code_hash",
+            "ON CONFLICT(user_name) DO UPDATE SET code_hash=excluded.code_hash,installation_hash=excluded.installation_hash",
             (admin_code_hash, admin_install_hash, time.time())
         )
 init()
