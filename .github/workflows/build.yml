@@ -1,7 +1,7 @@
-name: Build AI Camera Android v1.9
+name: Build AI Camera Android v2.0
 on:
   push:
-    branches: [v1.9-direct-camera]
+    branches: [v2.0-photo-experience]
   workflow_dispatch:
 permissions:
   contents: read
@@ -21,7 +21,7 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: "8.7"
-      - name: Build v1.9 APK
+      - name: Build v2.0 APK
         working-directory: android-project
         run: gradle assembleDebug --no-daemon
       - name: Verify APK and package source
@@ -29,14 +29,14 @@ jobs:
           APK=android-project/app/build/outputs/apk/debug/app-debug.apk
           test -s "$APK"
           "$ANDROID_HOME/build-tools/34.0.0/apksigner" verify --verbose "$APK"
-          cp "$APK" AICamera-Android-v1.9-debug.apk
-          zip -qr AICamera-Android-v1.9-source.zip android-project server \
+          cp "$APK" AI-Camera-Android-v2.0-debug.apk
+          zip -qr AI-Camera-Android-v2.0-source.zip android-project server \
             -x '*/build/*' '*/.gradle/*' '*.apk' '*.aab'
       - uses: actions/upload-artifact@v4
         with:
-          name: AICamera-Android-v1.9-delivery
+          name: AI-Camera-Android-v2.0-delivery
           path: |
-            AICamera-Android-v1.9-debug.apk
-            AICamera-Android-v1.9-source.zip
+            AI-Camera-Android-v2.0-debug.apk
+            AI-Camera-Android-v2.0-source.zip
           if-no-files-found: error
           retention-days: 30
