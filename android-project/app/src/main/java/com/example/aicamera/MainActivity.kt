@@ -851,6 +851,7 @@ private fun PhotoViewer(
     val current = files.getOrNull(index) ?: startFile
     val bitmap = rememberPhotoBitmap(current, 1)
     val canRevert = remember(current) { GalleryStorage.hasOriginalBackup(context, current) }
+    val isEnhanced = remember(current) { GalleryStorage.isEnhanced(context, current) }
     val isPending = pendingPaths.contains(current.absolutePath)
     val viewerBlur by animateDpAsState(if (isPending) 18.dp else 0.dp, animationSpec = tween(650), label = "viewerBlur")
     val viewerReveal by animateFloatAsState(if (isPending) 0f else 1f, animationSpec = tween(700), label = "viewerReveal")
@@ -941,11 +942,12 @@ private fun PhotoViewer(
                         TextButton(onClick = { onExport(current); onClose() }) {
                             Text("⇧ Export", color = Color.White)
                         }
-                        if (!canRevert && !isPending) {
+                        if (!isEnhanced && !isPending) {
                             TextButton(onClick = { onEnhance(current); onClose() }) {
                                 Text("✧ Enhance", color = Color(0xFFFFB5CE))
                             }
-                        } else if (canRevert && !isPending) {
+                        }
+                        if (canRevert && !isPending) {
                             TextButton(onClick = { onRevert(current); onClose() }) {
                                 Text("↶ Revert", color = Color.White)
                             }
