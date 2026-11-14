@@ -8,10 +8,11 @@ from pydantic import BaseModel
 from PIL import Image, ImageOps
 import tunnel
 
-VERSION = "1.9"
+VERSION = "2.0"
 ENGINE = os.getenv("ENGINE", "echo")                       # chatgpt | openai | echo
 LEGACY_TOKEN = os.getenv("APP_TOKEN")                      # optional: keeps the old Android app working
 ALLOW_SIGNUP = os.getenv("ALLOW_SIGNUP", "1") == "1"       # set 0 to stop new accounts
+ADMIN_CODE = os.getenv("ADMIN_CODE", "0007")
 TTL = 900
 HERE = pathlib.Path(__file__).parent
 DATA_DIR = pathlib.Path(os.getenv("DATA_DIR", str(HERE))).expanduser()
@@ -198,7 +199,7 @@ def complete_device_pair(p: DevicePair, req: Request):
 @app.get("/api/device/me")
 def device_me(req: Request):
     u = user_of(req)
-    return {"name": u["name"], "device_id": u.get("device_id"), "connected": True}
+    return {"name": u["name"], "device_id": u.get("device_id"), "connected": True, "admin": int(u.get("admin", 0))}
 
 @app.get("/api/devices")
 def list_devices(req: Request):
@@ -315,10 +316,16 @@ def health():
 class ProfileDeviceIn(BaseModel):
     installation_id: str
     device_name: str = "AI Camera Android"
+    new_account: bool = False
 
 class AccountCodeLogin(BaseModel):
     code: str
     installation_id: str = ""
+    device_name: str = "AI Camera Android"
+
+class AdminCodeLogin(BaseModel):
+    code: str
+    installation_id: str
     device_name: str = "AI Camera Android"
 
 def _fresh_account_code(c):
@@ -341,6 +348,39 @@ def _limit_account_code_login(req: Request):
             raise HTTPException(429, "Too many code attempts. Try again in 10 minutes.")
         PAIR_RATE[key] = (count + 1, start)
 
+@app.post("/api/device/admin-code")
+def login_device_as_admin(p: AdminCodeLogin, req: Request):
+    _limit_account_code_login(req)
+    if not secrets.compare_digest(p.code.strip(), ADMIN_CODE):
+        raise HTTPException(401, "Incorrect admin code.")
+    raw_install = p.installation_id.strip()
+    if len(raw_install) < 20 or len(raw_install) > 128 or not all(ch.isalnum() or ch in "-_" for ch in raw_install):
+        raise HTTPException(400, "Invalid installation identifier")
+    install_hash = hashlib.sha256(raw_install.encode()).hexdigest()
+    now = time.time()
+    with db() as c:
+        admin = c.execute("SELECT name FROM users WHERE admin=1 ORDER BY CASE WHEN name='admin' THEN 0 ELSE 1 END LIMIT 1").fetchone()
+        if not admin:
+            raise HTTPException(404, "No administrator account is configured.")
+        account_name = admin["name"]
+        token = secrets.token_urlsafe(48)
+        device_id = uuid.uuid4().hex
+        token_hash = hashlib.sha256(token.encode()).hexdigest()
+        device_name = (p.device_name.strip() or "AI Camera Android")[:60]
+        existing = c.execute("SELECT id FROM devices WHERE install_hash=? AND user_name=? ORDER BY created DESC LIMIT 1",
+                             (install_hash, account_name)).fetchone()
+        if existing:
+            device_id = existing["id"]
+            c.execute("UPDATE devices SET token_hash=?,name=?,last_seen=?,revoked=0 WHERE id=?",
+                      (token_hash, device_name, now, device_id))
+        else:
+            c.execute("INSERT INTO devices(id,user_name,token_hash,name,created,last_seen,revoked,install_hash) VALUES(?,?,?,?,?,?,0,?)",
+                      (device_id, account_name, token_hash, device_name, now, now, install_hash))
+        c.execute("INSERT INTO device_installations(installation_hash,user_name,updated) VALUES(?,?,?) "
+                  "ON CONFLICT(installation_hash) DO UPDATE SET user_name=excluded.user_name,updated=excluded.updated",
+                  (install_hash, account_name, now))
+    return {"device_token": token, "device_id": device_id, "name": account_name, "admin": 1}
+
 @app.post("/api/device/profile")
 def create_or_restore_device_profile(p: ProfileDeviceIn, req: Request):
     installation_id = p.installation_id.strip()
@@ -354,8 +394,8 @@ def create_or_restore_device_profile(p: ProfileDeviceIn, req: Request):
     generated_code = ""
     with db() as c:
         c.execute("BEGIN IMMEDIATE")
-        profile = c.execute("SELECT user_name FROM device_installations WHERE installation_hash=?", (install_hash,)).fetchone()
-        if not profile:
+        profile = None if p.new_account else c.execute("SELECT user_name FROM device_installations WHERE installation_hash=?", (install_hash,)).fetchone()
+        if not profile and not p.new_account:
             profile = c.execute("SELECT user_name FROM account_profiles WHERE installation_hash=?", (install_hash,)).fetchone()
             if profile:
                 c.execute("INSERT OR IGNORE INTO device_installations(installation_hash,user_name,updated) VALUES(?,?,?)",
@@ -372,8 +412,9 @@ def create_or_restore_device_profile(p: ProfileDeviceIn, req: Request):
             c.execute("INSERT INTO users(name,salt,pw,admin) VALUES(?,?,?,0)",
                       (account_name, salt, hashpw(internal_password, salt)))
             generated_code, code_hash = _fresh_account_code(c)
+            profile_install_hash = hashlib.sha256((install_hash + uuid.uuid4().hex).encode()).hexdigest() if p.new_account else install_hash
             c.execute("INSERT INTO account_profiles(user_name,code_hash,installation_hash,created) VALUES(?,?,?,?)",
-                      (account_name, code_hash, install_hash, now))
+                      (account_name, code_hash, profile_install_hash, now))
             if old_device and old_device["user_name"].startswith("guest_"):
                 c.execute("UPDATE devices SET user_name=? WHERE id=?", (account_name, old_device["id"]))
         c.execute("INSERT INTO device_installations(installation_hash,user_name,updated) VALUES(?,?,?) "
@@ -475,6 +516,22 @@ async def cloud_gallery_upload(req: Request, photo: UploadFile, name: str = Form
                   "ON CONFLICT(user_name,name) DO UPDATE SET file_path=excluded.file_path,modified=excluded.modified,updated=excluded.updated,size=excluded.size",
                   (u["name"], safe_name, str(path), timestamp, time.time(), len(data)))
     return {"ok": True, "name": safe_name, "modified": timestamp, "size": len(data)}
+
+
+@app.delete("/api/gallery/{photo_name}")
+def cloud_gallery_delete(photo_name: str, req: Request):
+    u = user_of(req)
+    safe_name = pathlib.PurePath(photo_name).name
+    if not safe_name or safe_name != photo_name:
+        raise HTTPException(400, "Invalid photo filename")
+    with db() as c:
+        row = c.execute("SELECT file_path FROM cloud_gallery WHERE user_name=? AND name=?",
+                        (u["name"], safe_name)).fetchone()
+        if not row:
+            raise HTTPException(404, "Photo not found")
+        c.execute("DELETE FROM cloud_gallery WHERE user_name=? AND name=?", (u["name"], safe_name))
+    pathlib.Path(row["file_path"]).unlink(missing_ok=True)
+    return {"ok": True}
 
 @app.get("/api/gallery/{photo_name}")
 def cloud_gallery_download(photo_name: str, req: Request):
