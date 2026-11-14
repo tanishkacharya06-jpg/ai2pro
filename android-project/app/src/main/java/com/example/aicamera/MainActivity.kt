@@ -6,6 +6,10 @@ import android.content.SharedPreferences
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.Canvas as BitmapCanvas
+import android.graphics.Paint as BitmapPaint
+import android.graphics.ColorMatrix as AndroidColorMatrix
+import android.graphics.ColorMatrixColorFilter
 import android.graphics.Matrix
 import android.net.Uri
 import android.os.Bundle
@@ -753,15 +757,229 @@ private fun GalleryScreen(
     }
 }
 
+private fun copyBitmap(source: Bitmap): Bitmap = source.copy(Bitmap.Config.ARGB_8888, true)
+
+private fun transformBitmap(
+    source: Bitmap,
+    brightness: Float,
+    contrast: Float,
+    saturation: Float,
+    sharpness: Float,
+    filter: String
+): Bitmap {
+    val output = Bitmap.createBitmap(source.width, source.height, Bitmap.Config.ARGB_8888)
+    val matrix = AndroidColorMatrix()
+    val sat = saturation.coerceIn(0f, 2f)
+    val saturationMatrix = AndroidColorMatrix().apply { setSaturation(sat) }
+    val c = contrast.coerceIn(0.25f, 2.5f)
+    val b = brightness.coerceIn(-100f, 100f)
+    val translate = 128f * (1f - c) + b
+    val contrastMatrix = AndroidColorMatrix(floatArrayOf(
+        c,0f,0f,0f,translate, 0f,c,0f,0f,translate, 0f,0f,c,0f,translate, 0f,0f,0f,1f,0f
+    ))
+    matrix.setConcat(contrastMatrix, saturationMatrix)
+    when (filter) {
+        "Mono" -> matrix.postConcat(AndroidColorMatrix().apply { setSaturation(0f) })
+        "Warm" -> matrix.postConcat(AndroidColorMatrix(floatArrayOf(
+            1.08f,0f,0f,0f,8f, 0f,1.01f,0f,0f,2f, 0f,0f,0.88f,0f,-5f, 0f,0f,0f,1f,0f
+        )))
+        "Cool" -> matrix.postConcat(AndroidColorMatrix(floatArrayOf(
+            0.9f,0f,0f,0f,-4f, 0f,1f,0f,0f,0f, 0f,0f,1.12f,0f,8f, 0f,0f,0f,1f,0f
+        )))
+        "Vintage" -> matrix.postConcat(AndroidColorMatrix(floatArrayOf(
+            0.9f,0f,0f,0f,18f, 0f,0.86f,0f,0f,10f, 0f,0f,0.72f,0f,0f, 0f,0f,0f,1f,0f
+        )))
+    }
+    val paint = BitmapPaint(BitmapPaint.ANTI_ALIAS_FLAG).apply { colorFilter = ColorMatrixColorFilter(matrix) }
+    BitmapCanvas(output).drawBitmap(source, 0f, 0f, paint)
+    if (sharpness <= 0.01f) return output
+    val amount = sharpness.coerceIn(0f, 2f)
+    val w = output.width; val h = output.height
+    if (w < 3 || h < 3) return output
+    val src = IntArray(w * h); val dst = IntArray(w * h)
+    output.getPixels(src, 0, w, 0, 0, w, h)
+    src.copyInto(dst)
+    for (y in 1 until h - 1) for (x in 1 until w - 1) {
+        val i = y * w + x
+        val center = src[i]
+        fun channel(shift: Int): Int {
+            val value = ((center shr shift) and 255) * (1f + 4f * amount) -
+                (((src[i-1] shr shift) and 255) + ((src[i+1] shr shift) and 255) +
+                 ((src[i-w] shr shift) and 255) + ((src[i+w] shr shift) and 255)) * amount
+            return value.toInt().coerceIn(0,255)
+        }
+        dst[i] = (center and -0x1000000) or (channel(16) shl 16) or (channel(8) shl 8) or channel(0)
+    }
+    val sharpened = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+    sharpened.setPixels(dst, 0, w, 0, 0, w, h)
+    output.recycle()
+    return sharpened
+}
+
+private fun rotateBitmap(source: Bitmap, degrees: Float): Bitmap {
+    val matrix = Matrix().apply { postRotate(degrees) }
+    return Bitmap.createBitmap(source, 0, 0, source.width, source.height, matrix, true)
+}
+
+private fun flipBitmap(source: Bitmap): Bitmap {
+    val matrix = Matrix().apply { preScale(-1f, 1f) }
+    return Bitmap.createBitmap(source, 0, 0, source.width, source.height, matrix, true)
+}
+
+private fun cropBitmap(source: Bitmap, ratio: String): Bitmap {
+    val target = when (ratio) { "1:1" -> 1f; "4:5" -> 0.8f; "16:9" -> 16f/9f; else -> 0f }
+    if (target == 0f) return copyBitmap(source)
+    val current = source.width.toFloat() / source.height
+    val width: Int; val height: Int
+    if (current > target) { height = source.height; width = (height * target).toInt().coerceAtLeast(1) }
+    else { width = source.width; height = (width / target).toInt().coerceAtLeast(1) }
+    return Bitmap.createBitmap(source, (source.width-width)/2, (source.height-height)/2, width, height)
+}
+
+private fun resizeBitmap(source: Bitmap, percent: Int): Bitmap {
+    val scale = percent.coerceIn(25, 200) / 100f
+    return Bitmap.createScaledBitmap(source, (source.width*scale).toInt().coerceAtLeast(1),
+        (source.height*scale).toInt().coerceAtLeast(1), true)
+}
+
+@Composable
+private fun PhotoEditor(file: File, onClose: () -> Unit, onSaved: () -> Unit) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var working by remember(file) { mutableStateOf<Bitmap?>(null) }
+    val undo = remember(file) { mutableStateListOf<Bitmap>() }
+    val redo = remember(file) { mutableStateListOf<Bitmap>() }
+    var brightness by remember(file) { mutableFloatStateOf(0f) }
+    var contrast by remember(file) { mutableFloatStateOf(1f) }
+    var saturation by remember(file) { mutableFloatStateOf(1f) }
+    var sharpness by remember(file) { mutableFloatStateOf(0f) }
+    var filter by remember(file) { mutableStateOf("Original") }
+    var cropRatio by remember(file) { mutableStateOf("Original") }
+    var resizePercent by remember(file) { mutableIntStateOf(100) }
+    var saving by remember { mutableStateOf(false) }
+    var error by remember { mutableStateOf("") }
+
+    LaunchedEffect(file) {
+        working = withContext(Dispatchers.IO) {
+            val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            BitmapFactory.decodeFile(file.absolutePath, bounds)
+            val sample = maxOf(1, Integer.highestOneBit(maxOf(bounds.outWidth, bounds.outHeight) / 4096))
+            BitmapFactory.decodeFile(file.absolutePath, BitmapFactory.Options().apply { inSampleSize = sample })
+        }
+    }
+    fun commit(next: Bitmap) {
+        working?.let { undo.add(copyBitmap(it)); if (undo.size > 15) undo.removeAt(0) }
+        redo.clear()
+        working = next
+    }
+    fun applyAdjustments() {
+        val current = working ?: return
+        commit(transformBitmap(current, brightness, contrast, saturation, sharpness, filter))
+    }
+
+    Dialog(onDismissRequest = { if (!saving) onClose() }, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+        Column(Modifier.fillMaxSize().background(Color(0xFF130D1D)).padding(14.dp)) {
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                TextButton(onClick = onClose, enabled = !saving) { Text("Cancel") }
+                Spacer(Modifier.weight(1f))
+                Text("Photo editor", color = Color.White, style = MaterialTheme.typography.titleLarge)
+                Spacer(Modifier.weight(1f))
+                TextButton(onClick = {
+                    val current = working ?: return@TextButton
+                    scope.launch {
+                        saving = true
+                        try {
+                            withContext(Dispatchers.IO) {
+                                val temp = File(context.cacheDir, "edit_${System.nanoTime()}.jpg")
+                                temp.outputStream().use { out ->
+                                    if (!current.compress(Bitmap.CompressFormat.JPEG, 95, out)) throw IOException("Could not encode edited photo")
+                                }
+                                GalleryStorage.replacePrimary(context, file, temp)
+                                temp.delete()
+                            }
+                            Toast.makeText(context, "Edited photo saved", Toast.LENGTH_SHORT).show()
+                            onSaved()
+                        } catch (e: Exception) { error = e.message ?: "Unable to save edits" }
+                        finally { saving = false }
+                    }
+                }, enabled = working != null && !saving) { Text(if (saving) "Saving…" else "Save") }
+            }
+            if (working == null) {
+                Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
+            } else {
+                Image(working!!.asImageBitmap(), null, Modifier.fillMaxWidth().weight(1f).padding(vertical = 8.dp),
+                    contentScale = ContentScale.Fit)
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedButton(onClick = { if (undo.isNotEmpty()) { redo.add(copyBitmap(working!!)); working = undo.removeAt(undo.lastIndex) } },
+                        enabled = undo.isNotEmpty()) { Text("↶ Undo") }
+                    OutlinedButton(onClick = { if (redo.isNotEmpty()) { undo.add(copyBitmap(working!!)); working = redo.removeAt(redo.lastIndex) } },
+                        enabled = redo.isNotEmpty()) { Text("↷ Redo") }
+                    Spacer(Modifier.weight(1f))
+                    Text("${working!!.width} × ${working!!.height}", color = Color.LightGray, modifier = Modifier.align(Alignment.CenterVertically))
+                }
+                LazyColumn(Modifier.weight(1.15f), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    item {
+                        Text("Transform", color = Color.White, style = MaterialTheme.typography.titleMedium)
+                        Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            OutlinedButton(onClick = { working?.let { commit(rotateBitmap(it, -90f)) } }) { Text("Rotate ↶") }
+                            OutlinedButton(onClick = { working?.let { commit(rotateBitmap(it, 90f)) } }) { Text("Rotate ↷") }
+                            OutlinedButton(onClick = { working?.let { commit(flipBitmap(it)) } }) { Text("Flip") }
+                        }
+                        Text("Crop ratio", color = Color.LightGray)
+                        Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            listOf("Original", "1:1", "4:5", "16:9").forEach { ratio ->
+                                FilterChip(selected = cropRatio == ratio, onClick = { cropRatio = ratio }, label = { Text(ratio) })
+                            }
+                            Button(onClick = { working?.let { commit(cropBitmap(it, cropRatio)) } }, enabled = cropRatio != "Original") { Text("Crop") }
+                        }
+                        Text("Resize", color = Color.LightGray)
+                        Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            listOf(50, 75, 100, 125, 150, 200).forEach { value ->
+                                FilterChip(selected = resizePercent == value, onClick = { resizePercent = value }, label = { Text("$value%") })
+                            }
+                            Button(onClick = { working?.let { commit(resizeBitmap(it, resizePercent)) } }) { Text("Apply") }
+                        }
+                    }
+                    item {
+                        Text("Adjustments", color = Color.White, style = MaterialTheme.typography.titleMedium)
+                        Text("Brightness · ${brightness.toInt()}", color = Color.LightGray)
+                        Slider(value = brightness, onValueChange = { brightness = it }, valueRange = -80f..80f)
+                        Text("Contrast · ${"%.2f".format(contrast)}", color = Color.LightGray)
+                        Slider(value = contrast, onValueChange = { contrast = it }, valueRange = 0.5f..1.8f)
+                        Text("Saturation · ${"%.2f".format(saturation)}", color = Color.LightGray)
+                        Slider(value = saturation, onValueChange = { saturation = it }, valueRange = 0f..2f)
+                        Text("Sharpness · ${"%.2f".format(sharpness)}", color = Color.LightGray)
+                        Slider(value = sharpness, onValueChange = { sharpness = it }, valueRange = 0f..1.5f)
+                        Button(onClick = { applyAdjustments() }) { Text("Apply adjustments") }
+                    }
+                    item {
+                        Text("Filters", color = Color.White, style = MaterialTheme.typography.titleMedium)
+                        Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            listOf("Original", "Mono", "Warm", "Cool", "Vintage").forEach { name ->
+                                FilterChip(selected = filter == name, onClick = { filter = name }, label = { Text(name) })
+                            }
+                            Button(onClick = { applyAdjustments() }) { Text("Apply filter") }
+                        }
+                    }
+                }
+            }
+            if (error.isNotBlank()) Text(error, color = Color(0xFFFF8E9E), modifier = Modifier.padding(6.dp))
+            if (saving) LinearProgressIndicator(Modifier.fillMaxWidth())
+        }
+    }
+}
+
 @Composable
 private fun PhotoViewer(
     files: List<File>,
     startFile: File,
     onClose: () -> Unit,
     onEnhance: (File) -> Unit,
-    onRevert: (File) -> Unit
+    onRevert: (File) -> Unit,
+    onEdited: () -> Unit
 ) {
     val context = LocalContext.current
+    var editing by remember { mutableStateOf(false) }
     var index by remember(files, startFile) { mutableIntStateOf(files.indexOf(startFile).coerceAtLeast(0)) }
     val current = files.getOrNull(index) ?: startFile
     val bitmap = rememberPhotoBitmap(current, 1)
@@ -813,6 +1031,7 @@ private fun PhotoViewer(
                 modifier = Modifier.align(Alignment.TopCenter).padding(top = 20.dp))
             Column(Modifier.align(Alignment.BottomCenter).fillMaxWidth().padding(12.dp)) {
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center) {
+                    TextButton(onClick = { editing = true }) { Text("Edit", color = Color.White) }
                     TextButton(onClick = { onEnhance(current); onClose() }) { Text("Enhance", color = Color.White) }
                     if (canRevert) TextButton(onClick = { confirmRevert = true }) {
                         Text("Revert original", color = Color.White)
@@ -826,6 +1045,9 @@ private fun PhotoViewer(
                 }
             }
         }
+    }
+    if (editing) {
+        PhotoEditor(file = current, onClose = { editing = false }, onSaved = { editing = false; onEdited() })
     }
     if (confirmRevert) {
         AlertDialog(
@@ -1364,6 +1586,12 @@ fun MainScreen() {
                                 galleryFiles = withContext(Dispatchers.IO) { GalleryStorage.list(context) }
                                 Toast.makeText(context, "Original photo restored", Toast.LENGTH_SHORT).show()
                             } catch (e: Exception) { message = e.message ?: "Unable to restore original" }
+                        }
+                    },
+                    onEdited = {
+                        scope.launch {
+                            runCatching { Api.syncGallery(context) }
+                            galleryFiles = withContext(Dispatchers.IO) { GalleryStorage.list(context) }
                         }
                     }
                 )
