@@ -99,6 +99,8 @@ import kotlin.math.abs
 
 const val DEFAULT_LINK = "aicam-dc66661a0788dd75"   // must equal PAIR_CODE in the server's startup.bat
 
+data class PromptItem(val id: Int, val name: String, val text: String)
+
 class AuthExpired : Exception("Session expired - please log in again")
 class ApiHttpException(val statusCode: Int, message: String) : IOException(message) {
     val retryable: Boolean get() = statusCode == 408 || statusCode == 429 || statusCode >= 500
@@ -193,6 +195,9 @@ object Api {
     var accountCode: String
         get() = readSecret("account_code")
         set(v) = writeSecret("account_code", v)
+    var isAdmin: Boolean
+        get() = prefs.getBoolean("admin_mode", false)
+        set(v) { prefs.edit().putBoolean("admin_mode", v).apply() }
     var pid: Int
         get() = prefs.getInt("pid", 0)
         set(v) { prefs.edit().putInt("pid", v).apply() }
@@ -255,9 +260,10 @@ object Api {
     }
 
 
-    suspend fun createOrRestoreProfile(): String = withContext(Dispatchers.IO) {
+    suspend fun createOrRestoreProfile(newAccount: Boolean = false): String = withContext(Dispatchers.IO) {
         resolve()
         val body = JSONObject().put("installation_id", installationId).put("device_name", "AI Camera Android")
+            .put("new_account", newAccount)
             .toString().toRequestBody("application/json".toMediaType())
         http.newCall(Request.Builder().url("$base/api/device/profile").post(body).build()).execute().use { r ->
             if (!r.isSuccessful) throw ApiHttpException(r.code, detail(r))
@@ -294,6 +300,54 @@ object Api {
             accountCode = JSONObject(r.body!!.string()).getString("code")
             accountCode
         }
+    }
+
+
+    suspend fun unlockAdmin(code: String): String = withContext(Dispatchers.IO) {
+        if (code.length != 4 || !code.all { it.isDigit() }) throw IOException("Enter the 4-digit admin code.")
+        resolve()
+        val body = JSONObject().put("code", code).put("installation_id", installationId)
+            .put("device_name", "AI Camera Android")
+            .toString().toRequestBody("application/json".toMediaType())
+        http.newCall(Request.Builder().url("$base/api/device/admin-code").post(body).build()).execute().use { r ->
+            if (!r.isSuccessful) throw ApiHttpException(r.code, detail(r))
+            val json = JSONObject(r.body!!.string())
+            sid = json.getString("device_token")
+            deviceId = json.optString("device_id")
+            user = json.getString("name")
+            isAdmin = json.optInt("admin", 0) == 1
+            accountCode = ""
+            user
+        }
+    }
+
+    suspend fun promptsFull(): List<PromptItem> = withContext(Dispatchers.IO) {
+        val call = { http.newCall(rq("/api/prompts").get().build()).execute() }
+        val response = try { call() } catch (e: IOException) { resolve(); call() }
+        response.use { r ->
+            check(r)
+            val json = JSONArray(r.body!!.string())
+            (0 until json.length()).map { i ->
+                val item = json.getJSONObject(i)
+                PromptItem(item.getInt("id"), item.getString("name"), item.getString("text"))
+            }
+        }
+    }
+
+    suspend fun savePrompt(id: Int?, name: String, text: String) = withContext(Dispatchers.IO) {
+        val body = JSONObject().put("name", name).put("text", text).toString().toRequestBody("application/json".toMediaType())
+        val path = if (id == null) "/api/prompts" else "/api/prompts/$id"
+        val request = if (id == null) rq(path).post(body).build() else rq(path).put(body).build()
+        http.newCall(request).execute().use { check(it) }
+    }
+
+    suspend fun deletePrompt(id: Int) = withContext(Dispatchers.IO) {
+        http.newCall(rq("/api/prompts/$id").delete().build()).execute().use { check(it) }
+    }
+
+    suspend fun deleteCloudPhoto(name: String) = withContext(Dispatchers.IO) {
+        val path = "/api/gallery/" + Uri.encode(name)
+        http.newCall(rq(path).delete().build()).execute().use { check(it) }
     }
 
     private fun uploadLocalPhoto(file: File) {
@@ -391,6 +445,7 @@ object Api {
             val json = JSONObject(r.body!!.string())
             user = json.getString("name")
             deviceId = json.optString("device_id")
+            isAdmin = json.optInt("admin", 0) == 1
             user
         }
     }
@@ -409,6 +464,7 @@ object Api {
         deviceId = ""
         user = ""
         accountCode = ""
+        isAdmin = false
     }
 
     suspend fun prompts(): List<Pair<Int, String>> = withContext(Dispatchers.IO) {
