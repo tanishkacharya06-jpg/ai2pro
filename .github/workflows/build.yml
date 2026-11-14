@@ -1,7 +1,7 @@
-name: Build AI Camera Android v1.9
+name: Build AI Camera Android
 on:
   push:
-    branches: [v1.9-direct-camera]
+    branches: [v1.9-direct-camera, v2.0-camera-gallery-overhaul]
   workflow_dispatch:
 permissions:
   contents: read
@@ -21,7 +21,7 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: "8.7"
-      - name: Build v1.9 APK
+      - name: Build APK
         working-directory: android-project
         run: gradle assembleDebug --no-daemon
       - name: Verify APK and package source
