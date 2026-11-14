@@ -939,7 +939,7 @@ private fun EnhancementQueueScreen(
     }
 }
 
-private enum class MainPage { CAMERA, GALLERY, QUEUE }
+private enum class MainPage { CAMERA, GALLERY, QUEUE, SETTINGS, EDITOR, ADMIN_PROMPTS }
 
 @Composable
 fun MainScreen() {
@@ -966,7 +966,6 @@ fun MainScreen() {
     var workInfos by remember { mutableStateOf(listOf<WorkInfo>()) }
     var message by remember { mutableStateOf("") }
     var flashEnabled by remember { mutableStateOf(false) }
-    var settingsOpen by remember { mutableStateOf(false) }
     var serverOnline by remember { mutableStateOf<Boolean?>(null) }
     var serverStatus by remember { mutableStateOf("Checking server…") }
     var checkingServer by remember { mutableStateOf(false) }
@@ -977,6 +976,12 @@ fun MainScreen() {
     var accountBusy by remember { mutableStateOf(false) }
     var accountError by remember { mutableStateOf("") }
     var accountSwitchReady by remember { mutableStateOf(false) }
+    var editingPhoto by remember { mutableStateOf<File?>(null) }
+    var ratioMode by remember { mutableStateOf(Api.prefs.getString("camera_ratio", "FULL") ?: "FULL") }
+    var revealAnimationEnabled by remember { mutableStateOf(Api.prefs.getBoolean("photo_reveal_animation", true)) }
+    var adminPrompts by remember { mutableStateOf(listOf<PromptEntry>()) }
+    var adminPromptBusy by remember { mutableStateOf(false) }
+    var adminPromptError by remember { mutableStateOf("") }
 
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
         if (uri != null) {
@@ -1021,7 +1026,8 @@ fun MainScreen() {
                     accountName = Api.user
                     accountCode = Api.accountCode
                     prompts = Api.prompts()
-                    runCatching { Api.syncGallery(context) }
+                    if (Api.isAdmin) adminPrompts = Api.promptEntries()
+                    enqueueGallerySync(context)
                     if (prompts.isNotEmpty() && prompts.none { it.first == selectedPrompt }) {
                         selectedPrompt = prompts[0].first
                         Api.pid = selectedPrompt
@@ -1050,7 +1056,7 @@ fun MainScreen() {
     }
     LaunchedEffect(page, viewerStart) {
         if (page == MainPage.GALLERY && viewerStart == null) {
-            runCatching { Api.syncGallery(context) }
+            enqueueGallerySync(context)
             galleryFiles = withContext(Dispatchers.IO) { GalleryStorage.list(context) }
             while (isActive) {
                 galleryFiles = withContext(Dispatchers.IO) { GalleryStorage.list(context) }
@@ -1110,26 +1116,30 @@ fun MainScreen() {
     fun savePreview(enhance: Boolean) {
         val source = pendingPhoto ?: return
         if (savingPhoto) return
+        // Close the preview on the same frame as the tap. Disk I/O, upload and AI
+        // processing continue off the camera UI thread.
+        pendingPhoto = null
         savingPhoto = true
         scope.launch {
             try {
-                val saved = withContext(Dispatchers.IO) { GalleryStorage.save(context, source, "original") }
-                runCatching { Api.syncGallery(context) }
-                if (enhance) {
-                    GalleryStorage.ensureOriginalBackup(context, saved)
-                    enqueueEnhancement(context, saved, selectedPrompt)
-                    Toast.makeText(context, "Original saved · added to enhancement queue", Toast.LENGTH_SHORT).show()
-                } else {
-                    Toast.makeText(context, "Original photo saved", Toast.LENGTH_SHORT).show()
+                val saved = withContext(Dispatchers.IO) {
+                    GalleryStorage.save(context, source, if (enhance) "enhance" else "photo")
                 }
-                source.delete()
-                pendingPhoto = null
+                if (enhance) {
+                    withContext(Dispatchers.IO) { GalleryStorage.ensureOriginalBackup(context, saved) }
+                    enqueueEnhancement(context, saved, selectedPrompt)
+                    Toast.makeText(context, "Saved · enhancement running in background", Toast.LENGTH_SHORT).show()
+                } else {
+                    Toast.makeText(context, "Photo saved", Toast.LENGTH_SHORT).show()
+                }
+                enqueueGallerySync(context)
                 if (page == MainPage.GALLERY) {
                     galleryFiles = withContext(Dispatchers.IO) { GalleryStorage.list(context) }
                 }
             } catch (e: Exception) {
                 message = e.message ?: "Unable to save photo"
             } finally {
+                source.delete()
                 savingPhoto = false
             }
         }
