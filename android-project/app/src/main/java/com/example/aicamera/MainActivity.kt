@@ -621,6 +621,7 @@ private fun rememberPhotoBitmap(file: File, sampleSize: Int = 1): Bitmap? {
 private fun CameraPreview(
     capture: ImageCapture,
     frontFacing: Boolean,
+    previewAspectRatio: Float?,
     onCameraReady: (Camera?, Float, Float) -> Unit,
     onFacingFallback: () -> Unit,
     onZoomGesture: (Float) -> Unit,
@@ -631,7 +632,7 @@ private fun CameraPreview(
     var provider by remember { mutableStateOf<ProcessCameraProvider?>(null) }
 
     var boundCamera by remember { mutableStateOf<Camera?>(null) }
-    Box(Modifier.fillMaxSize()
+    BoxWithConstraints(Modifier.fillMaxSize().background(Color.Black)
         .pointerInput(frontFacing) {
             detectTapGestures { position ->
                 val view = previewView
@@ -650,8 +651,10 @@ private fun CameraPreview(
             }
         }
     ) {
+        val previewModifier = if (previewAspectRatio == null) Modifier.fillMaxSize()
+            else Modifier.fillMaxWidth().aspectRatio(previewAspectRatio).align(Alignment.Center)
         AndroidView(
-            modifier = Modifier.fillMaxSize(),
+            modifier = previewModifier,
             factory = { c -> PreviewView(c).also { previewView = it } },
             update = { previewView = it }
         )
@@ -1200,6 +1203,12 @@ fun MainScreen() {
                     CameraPreview(
                         capture = capture,
                         frontFacing = cameraFront,
+                        previewAspectRatio = when (ratioMode) {
+                            "9:16" -> 9f / 16f
+                            "3:4" -> 3f / 4f
+                            "1:1" -> 1f
+                            else -> null
+                        },
                         onCameraReady = { camera, min, max ->
                             activeCamera = camera
                             minZoomRatio = min
@@ -1232,7 +1241,7 @@ fun MainScreen() {
                     }
                     Spacer(Modifier.weight(1f))
                     Surface(color = Color(0x99000000), shape = RoundedCornerShape(24.dp)) {
-                        TextButton(onClick = { settingsOpen = true }) {
+                        TextButton(onClick = { page = MainPage.SETTINGS }) {
                             Text("⚙", color = Color.White, style = MaterialTheme.typography.titleLarge)
                         }
                     }
@@ -1309,26 +1318,23 @@ fun MainScreen() {
                         }
                     }
                     Row(
-                        Modifier.fillMaxWidth().padding(horizontal = 12.dp),
-                        horizontalArrangement = Arrangement.SpaceEvenly,
+                        Modifier.fillMaxWidth().padding(horizontal = 22.dp).height(38.dp),
+                        horizontalArrangement = Arrangement.Center,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        listOf("FUN", "PORTRAIT", "PHOTO", "VIDEO", "MORE").forEach { mode ->
-                            val selected = mode == "PHOTO"
+                        listOf("9:16", "3:4", "1:1", "FULL").forEach { ratio ->
+                            val selected = ratioMode == ratio
                             TextButton(
                                 onClick = {
-                                    if (mode == "MORE") page = MainPage.QUEUE
-                                    else if (mode != "PHOTO") message = "$mode mode is coming soon"
+                                    ratioMode = ratio
+                                    Api.prefs.edit().putString("camera_ratio", ratio).apply()
                                 },
-                                contentPadding = PaddingValues(horizontal = 5.dp, vertical = 4.dp)
+                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp)
                             ) {
-                                Text(mode, color = if (selected) Color.White else Color.LightGray,
+                                Text(ratio, color = if (selected) Color.White else Color.LightGray,
                                     style = MaterialTheme.typography.labelLarge)
                             }
                         }
-                    }
-                    if (prompts.isNotEmpty()) {
-                        Chips(prompts, selectedPrompt) { selectedPrompt = it; Api.pid = it }
                     }
                 }
             }
