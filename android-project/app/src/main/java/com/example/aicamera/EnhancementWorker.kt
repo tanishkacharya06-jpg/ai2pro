@@ -3,6 +3,7 @@ package com.example.aicamera
 import android.content.Context
 import androidx.work.BackoffPolicy
 import androidx.work.Constraints
+import androidx.work.ExistingWorkPolicy
 import androidx.work.CoroutineWorker
 import androidx.work.ExistingWorkPolicy
 import androidx.work.NetworkType
@@ -136,6 +137,42 @@ class EnhancementWorker(
             }
         } catch (e: Exception) {
             Result.success(workDataOf(KEY_TASK_STATUS to "failed", KEY_ERROR to (e.message ?: "Enhancement failed")))
+        }
+    }
+}
+
+const val GALLERY_SYNC_WORK_NAME = "aicamera-cloud-gallery-sync"
+const val GALLERY_SYNC_WORK_TAG = "aicamera-cloud-gallery-sync-task"
+
+fun enqueueGallerySync(context: Context) {
+    val request = OneTimeWorkRequestBuilder<GallerySyncWorker>()
+        .setConstraints(
+            Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build()
+        )
+        .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 20, TimeUnit.SECONDS)
+        .addTag(GALLERY_SYNC_WORK_TAG)
+        .build()
+    WorkManager.getInstance(context.applicationContext)
+        .enqueueUniqueWork(GALLERY_SYNC_WORK_NAME, ExistingWorkPolicy.KEEP, request)
+}
+
+class GallerySyncWorker(
+    appContext: Context,
+    params: WorkerParameters
+) : CoroutineWorker(appContext, params) {
+    override suspend fun doWork(): Result {
+        Api.initialize(applicationContext)
+        return try {
+            Api.syncGallery(applicationContext)
+            Result.success()
+        } catch (e: AuthExpired) {
+            Result.failure()
+        } catch (e: ApiHttpException) {
+            if (e.retryable && runAttemptCount < 8) Result.retry() else Result.failure()
+        } catch (e: IOException) {
+            if (runAttemptCount < 8) Result.retry() else Result.failure()
+        } catch (_: Exception) {
+            Result.failure()
         }
     }
 }
