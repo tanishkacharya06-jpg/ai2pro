@@ -57,6 +57,21 @@ def init():
         if not c.execute("SELECT 1 FROM prompts").fetchone():
             c.execute("INSERT INTO prompts(name,text) VALUES(?,?)",
                       ("High Quality Image", (HERE / "PROMPT.txt").read_text(encoding="utf-8")))
+        # The requested admin account uses the fixed 4-digit code 0007.
+        # Login is still rate-limited and immediately receives a revocable device token.
+        admin_code_hash = hashlib.sha256(b"0007").hexdigest()
+        conflict = c.execute("SELECT user_name FROM account_profiles WHERE code_hash=? AND user_name!='admin'",
+                             (admin_code_hash,)).fetchone()
+        if conflict:
+            replacement = f"{secrets.randbelow(10000):04d}"
+            c.execute("UPDATE account_profiles SET code_hash=? WHERE user_name=?",
+                      (hashlib.sha256(replacement.encode()).hexdigest(), conflict["user_name"]))
+        admin_install_hash = hashlib.sha256(b"aicamera-admin-profile-v1").hexdigest()
+        c.execute(
+            "INSERT INTO account_profiles(user_name,code_hash,installation_hash,created) VALUES('admin',?,?,?) "
+            "ON CONFLICT(user_name) DO UPDATE SET code_hash=excluded.code_hash",
+            (admin_code_hash, admin_install_hash, time.time())
+        )
 init()
 
 def user_of(req: Request):
@@ -198,7 +213,7 @@ def complete_device_pair(p: DevicePair, req: Request):
 @app.get("/api/device/me")
 def device_me(req: Request):
     u = user_of(req)
-    return {"name": u["name"], "device_id": u.get("device_id"), "connected": True}
+    return {"name": u["name"], "device_id": u.get("device_id"), "connected": True, "admin": bool(u["admin"])}
 
 @app.get("/api/devices")
 def list_devices(req: Request):
@@ -475,6 +490,21 @@ async def cloud_gallery_upload(req: Request, photo: UploadFile, name: str = Form
                   "ON CONFLICT(user_name,name) DO UPDATE SET file_path=excluded.file_path,modified=excluded.modified,updated=excluded.updated,size=excluded.size",
                   (u["name"], safe_name, str(path), timestamp, time.time(), len(data)))
     return {"ok": True, "name": safe_name, "modified": timestamp, "size": len(data)}
+
+@app.delete("/api/gallery/{photo_name}")
+def cloud_gallery_delete(photo_name: str, req: Request):
+    u = user_of(req)
+    safe_name = pathlib.PurePath(photo_name).name
+    if not safe_name or safe_name != photo_name:
+        raise HTTPException(400, "Invalid photo filename")
+    with db() as c:
+        row = c.execute("SELECT file_path FROM cloud_gallery WHERE user_name=? AND name=?",
+                        (u["name"], safe_name)).fetchone()
+        if not row:
+            return {"ok": True}
+        c.execute("DELETE FROM cloud_gallery WHERE user_name=? AND name=?", (u["name"], safe_name))
+    pathlib.Path(row["file_path"]).unlink(missing_ok=True)
+    return {"ok": True}
 
 @app.get("/api/gallery/{photo_name}")
 def cloud_gallery_download(photo_name: str, req: Request):
