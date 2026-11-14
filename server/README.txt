@@ -1,54 +1,79 @@
-AI CAMERA BACKEND v1.9 - HOSTING GUIDE
+AI CAMERA BACKEND v2.0 — WINDOWS HOSTING
 
-WHAT THIS SERVER DOES
-- Provides the image-enhancement API used by the Android camera app.
-- Creates an anonymous per-installation device profile. The app can open straight to
-  the camera; a website sign-in or four-digit website code is NOT required to launch it.
-- Provides /health for the app's Online / Offline indicator in Settings.
-- Keeps enhancement jobs, account/device records, and prompt configuration in SQLite.
-- The website UI is available at / if you also want it; it is optional for camera launch.
+AI ENHANCEMENT ENGINE
+This project uses the existing ChatGPT WEBSITE + Playwright browser integration by default.
+It does not require an OpenAI API key in ENGINE=chatgpt mode. The host computer opens a
+browser profile at server/chatgpt_profile; sign in to your ChatGPT account in that browser.
+Keep that profile folder private and persistent. ChatGPT website UI changes may sometimes
+require adjustments to the Playwright integration.
 
-RECOMMENDED HOSTING (Docker)
-1. Upload this entire backend folder to your Docker-capable host.
-2. Build the Dockerfile in this folder.
-3. Set these environment variables:
-   DATA_DIR=/data
-   ENGINE=openai
-   OPENAI_API_KEY=<your OpenAI API key>
-   PORT=8000 (or let the host provide PORT)
-4. Attach persistent storage at /data. This is important: without a persistent volume,
-   SQLite user/device data and job files may be lost when the container is replaced.
-5. Deploy and open https://YOUR-HOST/health. A healthy server returns JSON with
-   status "online", version and engine.
-6. In the Android app, open Settings and tap Refresh beside Server status.
+WINDOWS QUICK START
+1. Install Python 3.10 or newer and enable "Add Python to PATH".
+2. Extract the backend folder somewhere permanent.
+3. Double-click startup.bat inside server/.
+4. On first run, it creates .venv, installs requirements, installs Playwright Chromium,
+   and downloads cloudflared.exe if it is not already in the folder.
+5. If Google Chrome is installed, the launcher sets BROWSER_CHANNEL=chrome; otherwise
+   Playwright uses its managed Chromium.
+6. Sign in to ChatGPT in the browser that opens on the host PC.
+7. Keep the terminal window and server computer running while using the Android app.
 
-LOCAL RUN (Python)
-   cd server
-   pip install -r requirements.txt
-   set DATA_DIR=./data
-   set ENGINE=openai
-   set OPENAI_API_KEY=<your OpenAI API key>
-   python -m uvicorn server:app --host 0.0.0.0 --port 8000
+AUTOMATIC PHONE SERVER DISCOVERY
+The app's built-in discovery topic is aicam-dc66661a0788dd75. startup.bat sets the same
+PAIR_CODE and TUNNEL=1. tunnel.py starts Cloudflare Quick Tunnel and publishes its current
+public URL to that ntfy topic. Do not change the topic unless you also change the Android APK.
+The phone app remains camera-first and discovers the host URL automatically.
 
-ENGINE OPTIONS
-- openai: real image editing; requires OPENAI_API_KEY and API access.
-- echo: test mode only; sends the source image back unchanged and is NOT real enhancement.
-- chatgpt: runs the Playwright browser flow on a computer you control. It is not
-  recommended for container/cloud hosting.
+ACCOUNT CODES AND PHOTOS
+- First app connection creates a USER<N> account and a permanent 4-digit account code.
+- Settings > My Account > Show Code displays that code.
+- Login Another Account requires confirmation that the old code was saved, then accepts
+  only the other account's 4-digit code.
+- Code 0007 is reserved for the built-in admin account. It provides admin-level access;
+  do not expose the server publicly with this default unchanged.
+- Admins can add, edit and delete enhancement prompts in the app's Settings.
+- Account photos are stored in the cloud_gallery directory and metadata in data.db.
 
-DOCKER COMPOSE
-From this folder, copy .env.example to .env, fill in OPENAI_API_KEY, then run:
-   docker compose up -d --build
-Compose stores the SQLite database and job files in the named volume mounted at /data.
+PERSISTENT DATA — DO NOT DELETE
+Keep the following alongside the backend:
+- data.db (accounts, codes, prompt definitions, photo metadata)
+- cloud_gallery/ (uploaded image files)
+- chatgpt_profile/ (host's ChatGPT browser session)
+- pair.txt (if present; automatic phone discovery topic)
 
-ANDROID APP BEHAVIOUR
-- The app opens directly to the camera. Website login/pairing is not needed just to open it.
-- When a server can be discovered, the app automatically creates/restores its guest
-  device profile, fetches enhancement presets, and shows Online · v1.9 in Settings.
-- If the server is offline, local camera capture and local gallery remain available;
-  enhancement will require the server to return online.
-- The website UI remains available as an optional separate interface.
+The default DATA_DIR is the server folder. If you previously set DATA_DIR elsewhere, keep
+using that same folder. Back up it regularly before replacing backend files. Do not overwrite
+it with an empty folder during upgrades.
 
-BACKUP
-Back up the persistent /data volume regularly. It contains data.db and jobs/.
-Do not publish your .env file or share your API key.
+MANUAL WINDOWS START (if you do not use startup.bat)
+Open Command Prompt in server/ and run:
+  py -m venv .venv
+  .venv\Scripts\activate
+  pip install -r requirements.txt
+  py -m playwright install chromium
+  set ENGINE=chatgpt
+  set HEADLESS=0
+  set TUNNEL=1
+  set PORT=8000
+  set PAIR_CODE=aicam-dc66661a0788dd75
+  py -m uvicorn server:app --host 0.0.0.0 --port 8000
+
+LINUX / DEBIAN
+  python3 -m venv .venv
+  source .venv/bin/activate
+  pip install -r requirements.txt
+  python -m playwright install chromium
+Download the appropriate cloudflared binary into this server folder, then run:
+  export ENGINE=chatgpt HEADLESS=0 TUNNEL=1 PORT=8000
+  export PAIR_CODE=aicam-dc66661a0788dd75
+  python -m uvicorn server:app --host 0.0.0.0 --port 8000
+A GUI desktop session is needed for the visible ChatGPT browser sign-in.
+
+HEALTH CHECK
+After startup, the local health endpoint is:
+  http://127.0.0.1:8000/health
+The Android Settings page also shows Online / Offline status.
+
+NO OPENAI API KEY
+Do not add OPENAI_API_KEY for the website-based ChatGPT engine. The optional ENGINE=openai
+mode is separate and is not used by the Android v2.0 default setup.
