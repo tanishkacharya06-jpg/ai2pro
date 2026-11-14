@@ -1405,8 +1405,19 @@ fun MainScreen() {
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.SpaceBetween
                     ) {
-                        TextButton(onClick = { page = MainPage.GALLERY }) {
-                            Text("▣", color = Color.White, style = MaterialTheme.typography.headlineMedium)
+                        Surface(
+                            color = Color(0x664B4A58),
+                            shape = RoundedCornerShape(18.dp),
+                            modifier = Modifier.clickable { page = MainPage.GALLERY }
+                        ) {
+                            Row(
+                                Modifier.padding(horizontal = 13.dp, vertical = 10.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(7.dp)
+                            ) {
+                                Text("▦", color = Color.White, style = MaterialTheme.typography.titleLarge)
+                                Text("Gallery", color = Color.White, style = MaterialTheme.typography.labelMedium)
+                            }
                         }
                         Box(
                             Modifier.size(76.dp).border(4.dp, Color.White, CircleShape).padding(6.dp)
