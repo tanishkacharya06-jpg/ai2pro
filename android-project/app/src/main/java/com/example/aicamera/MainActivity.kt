@@ -1276,13 +1276,18 @@ fun MainScreen() {
                 accountName = Api.user
                 accountCode = Api.accountCode
                 accountSwitchReady = false
-                runCatching { Api.syncGallery(context) }
+                enqueueGallerySync(context)
                 galleryFiles = withContext(Dispatchers.IO) { GalleryStorage.list(context) }
-                message = "Account connected. Cloud gallery synced."
+                message = "Account connected. Cloud gallery sync queued."
             } catch (e: Exception) { accountError = e.message ?: "Unable to log in with that code" }
             finally { accountBusy = false }
         }
     }
+
+    val pendingEnhancementPaths = workInfos
+        .filter { it.state == WorkInfo.State.ENQUEUED || it.state == WorkInfo.State.BLOCKED || it.state == WorkInfo.State.RUNNING }
+        .mapNotNull { loadEnhancementTaskMetadata(context, it.id)?.sourceFile }
+        .toSet()
 
     when (page) {
         MainPage.CAMERA -> {
@@ -1439,6 +1444,8 @@ fun MainScreen() {
         MainPage.GALLERY -> {
             GalleryScreen(
                 files = galleryFiles,
+                pendingPaths = pendingEnhancementPaths,
+                revealAnimationEnabled = revealAnimationEnabled,
                 onBack = { page = MainPage.CAMERA },
                 onImport = { picker.launch("image/*") },
                 onOpen = { file -> viewerFiles = galleryFiles.toList(); viewerStart = file }
@@ -1453,10 +1460,9 @@ fun MainScreen() {
                     onEnhance = { file ->
                         scope.launch {
                             try {
-                                GalleryStorage.ensureOriginalBackup(context, file)
+                                withContext(Dispatchers.IO) { GalleryStorage.ensureOriginalBackup(context, file) }
                                 enqueueEnhancement(context, file, selectedPrompt)
-                                Toast.makeText(context, "Added to enhancement queue", Toast.LENGTH_SHORT).show()
-                                page = MainPage.QUEUE
+                                Toast.makeText(context, "Enhancement started in background", Toast.LENGTH_SHORT).show()
                             } catch (e: Exception) { message = e.message ?: "Unable to queue enhancement" }
                         }
                     },
@@ -1464,10 +1470,33 @@ fun MainScreen() {
                         scope.launch {
                             try {
                                 withContext(Dispatchers.IO) { GalleryStorage.revertOriginal(context, file) }
-                                runCatching { Api.syncGallery(context) }
+                                enqueueGallerySync(context)
                                 galleryFiles = withContext(Dispatchers.IO) { GalleryStorage.list(context) }
                                 Toast.makeText(context, "Original photo restored", Toast.LENGTH_SHORT).show()
                             } catch (e: Exception) { message = e.message ?: "Unable to restore original" }
+                        }
+                    },
+                    onEdit = { file ->
+                        editingPhoto = file
+                        page = MainPage.EDITOR
+                    },
+                    onDelete = { file ->
+                        scope.launch {
+                            try {
+                                Api.queueCloudDelete(file.name)
+                                withContext(Dispatchers.IO) { GalleryStorage.deletePhoto(context, file) }
+                                enqueueGallerySync(context)
+                                galleryFiles = withContext(Dispatchers.IO) { GalleryStorage.list(context) }
+                                Toast.makeText(context, "Photo deleted", Toast.LENGTH_SHORT).show()
+                            } catch (e: Exception) { message = e.message ?: "Unable to delete photo" }
+                        }
+                    },
+                    onExport = { file ->
+                        scope.launch {
+                            try {
+                                withContext(Dispatchers.IO) { GalleryStorage.exportToDownloads(context, file) }
+                                Toast.makeText(context, "Exported to Downloads/AICamera", Toast.LENGTH_SHORT).show()
+                            } catch (e: Exception) { message = e.message ?: "Unable to export photo" }
                         }
                     }
                 )
@@ -1493,32 +1522,111 @@ fun MainScreen() {
             )
         }
     }
-    if (settingsOpen) {
-        CameraSettingsDialog(
-            accountName = accountName,
-            accountCode = accountCode,
-            accountBusy = accountBusy,
-            accountError = accountError,
-            switchReady = accountSwitchReady,
-            onShowCode = { showAccountCode() },
-            onLogoutForSwitch = { logoutForSwitch() },
-            onLoginCode = { loginAnotherAccount(it) },
-            serverStatus = serverStatus,
-            serverOnline = serverOnline,
-            checkingServer = checkingServer,
-            onRefreshServer = { refreshServer() },
-            timerSeconds = timerSeconds,
-            gridMode = gridMode,
-            onTimerChange = {
-                timerSeconds = it
-                Api.prefs.edit().putInt("camera_timer", it).apply()
-            },
-            onGridChange = {
-                gridMode = it
-                Api.prefs.edit().putInt("camera_grid", it).apply()
-            },
-            onClose = { settingsOpen = false }
-        )
+        MainPage.EDITOR -> {
+            val file = editingPhoto
+            if (file == null) {
+                page = MainPage.GALLERY
+            } else {
+                PhotoEditorScreen(
+                    file = file,
+                    onBack = { editingPhoto = null; page = MainPage.GALLERY },
+                    onSave = { edited ->
+                        scope.launch {
+                            try {
+                                withContext(Dispatchers.IO) { GalleryStorage.replacePrimary(context, file, edited) }
+                                edited.delete()
+                                enqueueGallerySync(context)
+                                galleryFiles = withContext(Dispatchers.IO) { GalleryStorage.list(context) }
+                                editingPhoto = null
+                                page = MainPage.GALLERY
+                                Toast.makeText(context, "Edits saved", Toast.LENGTH_SHORT).show()
+                            } catch (e: Exception) {
+                                message = e.message ?: "Unable to save edits"
+                            }
+                        }
+                    }
+                )
+            }
+        }
+        MainPage.SETTINGS -> {
+            CameraSettingsScreen(
+                accountName = accountName,
+                accountCode = accountCode,
+                accountBusy = accountBusy,
+                accountError = accountError,
+                switchReady = accountSwitchReady,
+                onShowCode = { showAccountCode() },
+                onLogoutForSwitch = { logoutForSwitch() },
+                onLoginCode = { loginAnotherAccount(it) },
+                serverStatus = serverStatus,
+                serverOnline = serverOnline,
+                checkingServer = checkingServer,
+                onRefreshServer = { refreshServer() },
+                timerSeconds = timerSeconds,
+                gridMode = gridMode,
+                onTimerChange = {
+                    timerSeconds = it
+                    Api.prefs.edit().putInt("camera_timer", it).apply()
+                },
+                onGridChange = {
+                    gridMode = it
+                    Api.prefs.edit().putInt("camera_grid", it).apply()
+                },
+                photoAnimationEnabled = revealAnimationEnabled,
+                onPhotoAnimationChange = {
+                    revealAnimationEnabled = it
+                    Api.prefs.edit().putBoolean("photo_reveal_animation", it).apply()
+                },
+                prompts = prompts,
+                selectedPrompt = selectedPrompt,
+                onPromptChange = { selectedPrompt = it; Api.pid = it },
+                isAdmin = Api.isAdmin,
+                onManagePrompts = {
+                    page = MainPage.ADMIN_PROMPTS
+                },
+                onBack = { page = MainPage.CAMERA }
+            )
+        }
+        MainPage.ADMIN_PROMPTS -> {
+            LaunchedEffect(Unit) {
+                adminPromptBusy = true
+                try { adminPrompts = Api.promptEntries(); adminPromptError = "" }
+                catch (e: Exception) { adminPromptError = e.message ?: "Unable to load prompts" }
+                finally { adminPromptBusy = false }
+            }
+            AdminPromptsScreen(
+                prompts = adminPrompts,
+                busy = adminPromptBusy,
+                error = adminPromptError,
+                onBack = { page = MainPage.SETTINGS },
+                onSave = { id, name, text ->
+                    scope.launch {
+                        adminPromptBusy = true
+                        try {
+                            Api.savePrompt(id, name, text)
+                            adminPrompts = Api.promptEntries()
+                            prompts = Api.prompts()
+                            Toast.makeText(context, "Prompt saved", Toast.LENGTH_SHORT).show()
+                            adminPromptError = ""
+                        } catch (e: Exception) { adminPromptError = e.message ?: "Unable to save prompt" }
+                        finally { adminPromptBusy = false }
+                    }
+                },
+                onDelete = { id ->
+                    scope.launch {
+                        adminPromptBusy = true
+                        try {
+                            Api.deletePrompt(id)
+                            adminPrompts = Api.promptEntries()
+                            prompts = Api.prompts()
+                            Toast.makeText(context, "Prompt deleted", Toast.LENGTH_SHORT).show()
+                            adminPromptError = ""
+                        } catch (e: Exception) { adminPromptError = e.message ?: "Unable to delete prompt" }
+                        finally { adminPromptBusy = false }
+                    }
+                }
+            )
+        }
     }
 }
 
