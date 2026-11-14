@@ -975,6 +975,140 @@ private fun PhotoViewer(
     }
 }
 
+
+private fun renderEditedBitmap(
+    source: Bitmap,
+    brightness: Float,
+    contrast: Float,
+    saturation: Float,
+    rotation: Float,
+    flipHorizontal: Boolean,
+    cropSquare: Boolean
+): Bitmap {
+    val matrix = android.graphics.Matrix().apply {
+        if (rotation != 0f) postRotate(rotation)
+        if (flipHorizontal) postScale(-1f, 1f)
+    }
+    val transformed = if (rotation != 0f || flipHorizontal) {
+        Bitmap.createBitmap(source, 0, 0, source.width, source.height, matrix, true)
+    } else source
+    val cropped = if (cropSquare) {
+        val side = min(transformed.width, transformed.height)
+        val left = (transformed.width - side) / 2
+        val top = (transformed.height - side) / 2
+        Bitmap.createBitmap(transformed, left, top, side, side)
+    } else transformed
+    val result = Bitmap.createBitmap(cropped.width, cropped.height, Bitmap.Config.ARGB_8888)
+    val color = android.graphics.ColorMatrix().apply { setSaturation(saturation) }
+    val c = contrast
+    val b = brightness * 255f
+    val contrastMatrix = android.graphics.ColorMatrix(floatArrayOf(
+        c, 0f, 0f, 0f, b,
+        0f, c, 0f, 0f, b,
+        0f, 0f, c, 0f, b,
+        0f, 0f, 0f, 1f, 0f
+    ))
+    color.postConcat(contrastMatrix)
+    val paint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+        colorFilter = android.graphics.ColorMatrixColorFilter(color)
+        isFilterBitmap = true
+    }
+    android.graphics.Canvas(result).drawBitmap(cropped, 0f, 0f, paint)
+    if (cropped !== transformed && cropped !== source) cropped.recycle()
+    if (transformed !== source) transformed.recycle()
+    return result
+}
+
+@Composable
+private fun PhotoEditorDialog(
+    file: File,
+    onCancel: () -> Unit,
+    onSave: (File) -> Unit
+) {
+    val context = LocalContext.current
+    val sourcePreview = rememberPhotoBitmap(file, 3)
+    var brightness by remember(file) { mutableFloatStateOf(0f) }
+    var contrast by remember(file) { mutableFloatStateOf(1f) }
+    var saturation by remember(file) { mutableFloatStateOf(1f) }
+    var rotation by remember(file) { mutableFloatStateOf(0f) }
+    var flip by remember(file) { mutableStateOf(false) }
+    var cropSquare by remember(file) { mutableStateOf(false) }
+    var busy by remember(file) { mutableStateOf(false) }
+    Dialog(onDismissRequest = { if (!busy) onCancel() }, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+        Surface(Modifier.fillMaxSize(), color = Color(0xFF0B0D12)) {
+            Column(Modifier.fillMaxSize().padding(18.dp)) {
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    TextButton(enabled = !busy, onClick = onCancel) { Text("Cancel", color = Color.White) }
+                    Spacer(Modifier.weight(1f))
+                    Text("Edit photo", style = MaterialTheme.typography.titleLarge, color = Color.White)
+                    Spacer(Modifier.weight(1f))
+                    TextButton(enabled = !busy, onClick = {
+                        brightness = 0f; contrast = 1f; saturation = 1f
+                        rotation = 0f; flip = false; cropSquare = false
+                    }) { Text("Reset", color = Color(0xFFFFB5CB)) }
+                }
+                Box(Modifier.weight(1f).fillMaxWidth().padding(vertical = 10.dp), contentAlignment = Alignment.Center) {
+                    if (sourcePreview != null) {
+                        Image(
+                            sourcePreview.asImageBitmap(),
+                            contentDescription = "Photo edit preview",
+                            modifier = Modifier.fillMaxSize().graphicsLayer {
+                                rotationZ = rotation
+                                scaleX = if (flip) -1f else 1f
+                            },
+                            contentScale = if (cropSquare) ContentScale.Crop else ContentScale.Fit
+                        )
+                    } else CircularProgressIndicator()
+                }
+                Column(Modifier.weight(0.9f).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
+                        OutlinedButton(enabled = !busy, onClick = { rotation = (rotation - 90f + 360f) % 360f }) { Text("↶ Rotate") }
+                        OutlinedButton(enabled = !busy, onClick = { flip = !flip }) { Text("⇋ Flip") }
+                        OutlinedButton(enabled = !busy, onClick = { cropSquare = !cropSquare }) { Text(if (cropSquare) "Free crop" else "Square crop") }
+                    }
+                    Text("Brightness · ${(brightness * 100).toInt()}%", color = Color.White)
+                    Slider(value = brightness, onValueChange = { brightness = it }, valueRange = -0.5f..0.5f, enabled = !busy)
+                    Text("Contrast · ${(contrast * 100).toInt()}%", color = Color.White)
+                    Slider(value = contrast, onValueChange = { contrast = it }, valueRange = 0.5f..1.8f, enabled = !busy)
+                    Text("Saturation · ${(saturation * 100).toInt()}%", color = Color.White)
+                    Slider(value = saturation, onValueChange = { saturation = it }, valueRange = 0f..2f, enabled = !busy)
+                }
+                Button(
+                    enabled = !busy && sourcePreview != null,
+                    modifier = Modifier.fillMaxWidth(),
+                    onClick = {
+                        busy = true
+                        val b = brightness; val c = contrast; val sat = saturation
+                        val rot = rotation; val mirrored = flip; val square = cropSquare
+                        LaunchedEffect(b, c, sat, rot, mirrored, square) { }
+                        val output = File(context.cacheDir, "edited_${UUID.randomUUID()}.jpg")
+                        // Use the full-resolution original for the saved output.
+                        val source = file
+                        kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).launch {
+                            try {
+                                val full = loadBmp(source, 1)
+                                val edited = renderEditedBitmap(full, b, c, sat, rot, mirrored, square)
+                                full.recycle()
+                                output.outputStream().use { stream ->
+                                    if (!edited.compress(Bitmap.CompressFormat.JPEG, 96, stream)) throw IOException("Could not encode edited photo")
+                                }
+                                edited.recycle()
+                                withContext(Dispatchers.Main) { onSave(output); busy = false }
+                            } catch (e: Exception) {
+                                output.delete()
+                                withContext(Dispatchers.Main) {
+                                    Toast.makeText(context, e.message ?: "Edit failed", Toast.LENGTH_SHORT).show()
+                                    busy = false
+                                }
+                            }
+                        }
+                    }
+                ) { Text(if (busy) "Saving…" else "Save changes") }
+            }
+        }
+    }
+}
+
 @Composable
 private fun EnhancementQueueScreen(
     items: List<WorkInfo>,
