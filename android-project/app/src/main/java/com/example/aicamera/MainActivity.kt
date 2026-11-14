@@ -1349,7 +1349,7 @@ fun MainScreen() {
                     val file = metadata?.let { File(it.sourceFile) }
                     if (file != null && file.isFile) {
                         try {
-                            enqueueEnhancement(context, file, metadata.promptId, metadata.requestId)
+                            enqueueEnhancement(context, file, metadata.promptId, metadata.requestId, metadata.accountName)
                             Toast.makeText(context, "Task added to queue", Toast.LENGTH_SHORT).show()
                         } catch (e: Exception) { message = e.message ?: "Unable to retry task" }
                     } else message = "The original photo is missing, so this task cannot be retried"
