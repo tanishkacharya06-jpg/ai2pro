@@ -5,6 +5,7 @@ import android.graphics.BitmapFactory
 import android.content.ContentUris
 import android.content.ContentValues
 import android.content.Context
+import android.net.Uri
 import android.provider.MediaStore
 import java.io.File
 import java.io.FileOutputStream
@@ -162,6 +163,55 @@ object GalleryStorage {
         return directory(context).listFiles { f ->
             f.isFile && f.extension.lowercase() in setOf("jpg", "jpeg", "png", "webp")
         }?.sortedByDescending { it.lastModified() } ?: emptyList()
+    }
+
+    /** Delete a gallery photo and its private original backup, plus its MediaStore copy. */
+    @Synchronized
+    fun deletePhoto(context: Context, source: File) {
+        val resolver = context.contentResolver
+        try {
+            resolver.query(
+                MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
+                arrayOf(MediaStore.Images.Media._ID),
+                "${MediaStore.Images.Media.DISPLAY_NAME}=? AND ${MediaStore.Images.Media.RELATIVE_PATH}=?",
+                arrayOf(source.name, accountMediaPath()),
+                null
+            )?.use { cursor ->
+                val idCol = cursor.getColumnIndexOrThrow(MediaStore.Images.Media._ID)
+                while (cursor.moveToNext()) {
+                    val uri = ContentUris.withAppendedId(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, cursor.getLong(idCol))
+                    resolver.delete(uri, null, null)
+                }
+            }
+        } catch (_: Exception) { }
+        source.delete()
+        File(backupDirectory(context), source.name).delete()
+    }
+
+    /** Copy a photo to the public Downloads/AICamera folder for export. */
+    fun exportToDownloads(context: Context, source: File): Uri {
+        if (!source.isFile) throw IOException("The image is no longer available")
+        val values = ContentValues().apply {
+            put(MediaStore.Downloads.DISPLAY_NAME, "AICamera_${source.name}")
+            put(MediaStore.Downloads.MIME_TYPE, mimeFor(source))
+            put(MediaStore.Downloads.RELATIVE_PATH, "Download/AICamera")
+            put(MediaStore.Downloads.IS_PENDING, 1)
+        }
+        val uri = context.contentResolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
+            ?: throw IOException("Unable to create an export file")
+        try {
+            context.contentResolver.openOutputStream(uri, "w")?.use { output ->
+                source.inputStream().use { input -> input.copyTo(output) }
+            } ?: throw IOException("Unable to write the exported image")
+            context.contentResolver.update(uri, ContentValues().apply {
+                put(MediaStore.Downloads.IS_PENDING, 0)
+            }, null, null)
+            return uri
+        } catch (e: Exception) {
+            context.contentResolver.delete(uri, null, null)
+            if (e is IOException) throw e
+            throw IOException("Unable to export the image", e)
+        }
     }
 
     @Synchronized
