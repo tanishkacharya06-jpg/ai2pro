@@ -1540,6 +1540,12 @@ fun MainScreen() {
                     CameraPreview(
                         capture = capture,
                         frontFacing = cameraFront,
+                        previewAspectRatio = when (aspectMode) {
+                            "9:16" -> 9f / 16f
+                            "3:4" -> 3f / 4f
+                            "1:1" -> 1f
+                            else -> null
+                        },
                         onCameraReady = { camera, min, max ->
                             activeCamera = camera
                             minZoomRatio = min
@@ -1653,18 +1659,15 @@ fun MainScreen() {
                         horizontalArrangement = Arrangement.SpaceEvenly,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        listOf("FUN", "PORTRAIT", "PHOTO", "VIDEO", "MORE").forEach { mode ->
-                            val selected = mode == "PHOTO"
-                            TextButton(
+                        listOf("9:16", "3:4", "1:1", "Full").forEach { ratio ->
+                            FilterChip(
+                                selected = aspectMode == ratio.lowercase().let { if (it == "full") "full" else ratio },
                                 onClick = {
-                                    if (mode == "MORE") page = MainPage.QUEUE
-                                    else if (mode != "PHOTO") message = "$mode mode is coming soon"
+                                    aspectMode = if (ratio == "Full") "full" else ratio
+                                    Api.prefs.edit().putString("photo_aspect", aspectMode).apply()
                                 },
-                                contentPadding = PaddingValues(horizontal = 5.dp, vertical = 4.dp)
-                            ) {
-                                Text(mode, color = if (selected) Color.White else Color.LightGray,
-                                    style = MaterialTheme.typography.labelLarge)
-                            }
+                                label = { Text(ratio) }
+                            )
                         }
                     }
                     if (prompts.isNotEmpty()) {
@@ -1683,8 +1686,13 @@ fun MainScreen() {
             }
         }
         MainPage.GALLERY -> {
+            val pendingNames = workInfos.filter {
+                it.state == WorkInfo.State.ENQUEUED || it.state == WorkInfo.State.BLOCKED || it.state == WorkInfo.State.RUNNING
+            }.mapNotNull { loadEnhancementTaskMetadata(context, it.id)?.sourceFile?.let { p -> File(p).name } }.toSet()
             GalleryScreen(
                 files = galleryFiles,
+                pendingNames = pendingNames,
+                revealAnimation = galleryRevealAnimation,
                 onBack = { page = MainPage.CAMERA },
                 onImport = { picker.launch("image/*") },
                 onOpen = { file -> viewerFiles = galleryFiles.toList(); viewerStart = file }
@@ -1695,14 +1703,38 @@ fun MainScreen() {
                 PhotoViewer(
                     files = snapshot,
                     startFile = start,
+                    pendingNames = pendingNames,
                     onClose = { viewerFiles = null; viewerStart = null },
+                    onEdit = { editingPhoto = it },
+                    onDelete = { file ->
+                        scope.launch {
+                            try {
+                                runCatching { Api.deleteCloudPhoto(file.name) }
+                                withContext(Dispatchers.IO) { GalleryStorage.deletePhoto(context, file) }
+                                galleryFiles = withContext(Dispatchers.IO) { GalleryStorage.list(context) }
+                                enqueueGallerySync(context)
+                                Toast.makeText(context, "Photo deleted", Toast.LENGTH_SHORT).show()
+                            } catch (e: Exception) { message = e.message ?: "Unable to delete photo" }
+                        }
+                    },
+                    onExport = { file ->
+                        scope.launch(Dispatchers.IO) {
+                            try {
+                                GalleryStorage.exportToDownloads(context, file)
+                                withContext(Dispatchers.Main) {
+                                    Toast.makeText(context, "Exported to Downloads/AI Camera", Toast.LENGTH_SHORT).show()
+                                }
+                            } catch (e: Exception) {
+                                withContext(Dispatchers.Main) { Toast.makeText(context, e.message ?: "Export failed", Toast.LENGTH_SHORT).show() }
+                            }
+                        }
+                    },
                     onEnhance = { file ->
                         scope.launch {
                             try {
                                 GalleryStorage.ensureOriginalBackup(context, file)
                                 enqueueEnhancement(context, file, selectedPrompt)
-                                Toast.makeText(context, "Added to enhancement queue", Toast.LENGTH_SHORT).show()
-                                page = MainPage.QUEUE
+                                Toast.makeText(context, "Enhancement started in background", Toast.LENGTH_SHORT).show()
                             } catch (e: Exception) { message = e.message ?: "Unable to queue enhancement" }
                         }
                     },
@@ -1710,7 +1742,7 @@ fun MainScreen() {
                         scope.launch {
                             try {
                                 withContext(Dispatchers.IO) { GalleryStorage.revertOriginal(context, file) }
-                                runCatching { Api.syncGallery(context) }
+                                enqueueGallerySync(context)
                                 galleryFiles = withContext(Dispatchers.IO) { GalleryStorage.list(context) }
                                 Toast.makeText(context, "Original photo restored", Toast.LENGTH_SHORT).show()
                             } catch (e: Exception) { message = e.message ?: "Unable to restore original" }
@@ -1763,6 +1795,17 @@ fun MainScreen() {
                 gridMode = it
                 Api.prefs.edit().putInt("camera_grid", it).apply()
             },
+            galleryRevealAnimation = galleryRevealAnimation,
+            onRevealAnimationChange = {
+                galleryRevealAnimation = it
+                Api.prefs.edit().putBoolean("gallery_reveal_animation", it).apply()
+            },
+            adminUnlocked = adminUnlocked,
+            adminCodeError = adminCodeError,
+            adminPrompts = adminPrompts,
+            onAdminLogin = { loginAdmin(it) },
+            onSavePrompt = { id, name, text -> saveAdminPrompt(id, name, text) },
+            onDeletePrompt = { removeAdminPrompt(it) },
             onClose = { settingsOpen = false }
         )
     }
@@ -2082,6 +2125,30 @@ private fun SettingsCard(title: String, subtitle: String, content: @Composable C
             Text(subtitle, color = Color.Gray, style = MaterialTheme.typography.bodySmall)
             content()
         }
+
+    editingPhoto?.let { file ->
+        PhotoEditorDialog(
+            file = file,
+            onCancel = { editingPhoto = null },
+            onSave = { output ->
+                scope.launch {
+                    try {
+                        withContext(Dispatchers.IO) {
+                            GalleryStorage.ensureOriginalBackup(context, file)
+                            GalleryStorage.replacePrimary(context, file, output)
+                        }
+                        enqueueGallerySync(context)
+                        galleryFiles = withContext(Dispatchers.IO) { GalleryStorage.list(context) }
+                        editingPhoto = null
+                        output.delete()
+                        Toast.makeText(context, "Edits saved", Toast.LENGTH_SHORT).show()
+                    } catch (e: Exception) {
+                        message = e.message ?: "Could not save edits"
+                    }
+                }
+            }
+        )
+    }
     }
 }
 
