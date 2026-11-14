@@ -238,7 +238,13 @@ def disconnect_device(req: Request):
     if tok and not (LEGACY_TOKEN and tok == LEGACY_TOKEN):
         token_hash = hashlib.sha256(tok.encode()).hexdigest()
         with db() as c:
+            device = c.execute("SELECT install_hash,user_name FROM devices WHERE token_hash=?", (token_hash,)).fetchone()
             c.execute("UPDATE devices SET revoked=1 WHERE token_hash=?", (token_hash,))
+            # Clear only this phone's remembered account. If the user closes the
+            # login screen, its next app launch will create a fresh USER<N> profile.
+            if device and device["install_hash"]:
+                c.execute("DELETE FROM device_installations WHERE installation_hash=? AND user_name=?",
+                          (device["install_hash"], device["user_name"]))
     return {"ok": True}
 
 @app.post("/api/devices/{device_id}/revoke")
