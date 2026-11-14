@@ -1175,6 +1175,39 @@ private fun EnhancementQueueScreen(
 
 private enum class MainPage { CAMERA, GALLERY, QUEUE }
 
+private fun cropPhotoForAspect(source: File, mode: String, cacheDir: File): File {
+    val ratio = when (mode) {
+        "9:16" -> 9f / 16f
+        "3:4" -> 3f / 4f
+        "1:1" -> 1f
+        else -> return source
+    }
+    val bitmap = loadBmp(source, 1)
+    val currentRatio = bitmap.width.toFloat() / bitmap.height.toFloat()
+    val cropWidth: Int
+    val cropHeight: Int
+    if (currentRatio > ratio) {
+        cropHeight = bitmap.height
+        cropWidth = (cropHeight * ratio).toInt().coerceAtLeast(1)
+    } else {
+        cropWidth = bitmap.width
+        cropHeight = (cropWidth / ratio).toInt().coerceAtLeast(1)
+    }
+    val left = (bitmap.width - cropWidth) / 2
+    val top = (bitmap.height - cropHeight) / 2
+    val cropped = Bitmap.createBitmap(bitmap, left, top, cropWidth, cropHeight)
+    val out = File(cacheDir, "framed_${UUID.randomUUID()}.jpg")
+    try {
+        out.outputStream().use { stream ->
+            if (!cropped.compress(Bitmap.CompressFormat.JPEG, 96, stream)) throw IOException("Unable to crop image")
+        }
+    } finally {
+        if (cropped !== bitmap) cropped.recycle()
+        bitmap.recycle()
+    }
+    return out
+}
+
 @Composable
 fun MainScreen() {
     val context = LocalContext.current
@@ -1211,6 +1244,12 @@ fun MainScreen() {
     var accountBusy by remember { mutableStateOf(false) }
     var accountError by remember { mutableStateOf("") }
     var accountSwitchReady by remember { mutableStateOf(false) }
+    var galleryRevealAnimation by remember { mutableStateOf(Api.prefs.getBoolean("gallery_reveal_animation", true)) }
+    var aspectMode by remember { mutableStateOf(Api.prefs.getString("photo_aspect", "full") ?: "full") }
+    var editingPhoto by remember { mutableStateOf<File?>(null) }
+    var adminUnlocked by remember { mutableStateOf(Api.isAdmin) }
+    var adminCodeError by remember { mutableStateOf("") }
+    var adminPrompts by remember { mutableStateOf(listOf<PromptItem>()) }
 
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
         if (uri != null) {
@@ -1247,14 +1286,17 @@ fun MainScreen() {
                 try {
                     if (Api.sid.isNotBlank()) {
                         try { Api.validate() }
-                        catch (_: Exception) { Api.sid = ""; Api.deviceId = ""; Api.user = "" }
+                        catch (_: Exception) { Api.sid = ""; Api.deviceId = ""; Api.user = ""; Api.isAdmin = false }
                     }
                     if (Api.sid.isBlank() || (Api.accountCode.isBlank() && Api.user.startsWith("guest_"))) {
                         Api.createOrRestoreProfile()
                     }
                     accountName = Api.user
                     accountCode = Api.accountCode
+                    adminUnlocked = Api.isAdmin
                     prompts = Api.prompts()
+                    if (adminUnlocked) adminPrompts = Api.promptsFull()
+                    enqueueGallerySync(context)
                     runCatching { Api.syncGallery(context) }
                     if (prompts.isNotEmpty() && prompts.none { it.first == selectedPrompt }) {
                         selectedPrompt = prompts[0].first
@@ -1284,6 +1326,7 @@ fun MainScreen() {
     }
     LaunchedEffect(page, viewerStart) {
         if (page == MainPage.GALLERY && viewerStart == null) {
+            enqueueGallerySync(context)
             runCatching { Api.syncGallery(context) }
             galleryFiles = withContext(Dispatchers.IO) { GalleryStorage.list(context) }
             while (isActive) {
@@ -1344,26 +1387,37 @@ fun MainScreen() {
     fun savePreview(enhance: Boolean) {
         val source = pendingPhoto ?: return
         if (savingPhoto) return
+        // Dismiss the preview instantly; all file and network work continues asynchronously.
+        pendingPhoto = null
         savingPhoto = true
+        val promptForPhoto = selectedPrompt
+        val selectedAspect = aspectMode
         scope.launch {
+            var framed: File? = null
             try {
-                val saved = withContext(Dispatchers.IO) { GalleryStorage.save(context, source, "original") }
-                runCatching { Api.syncGallery(context) }
-                if (enhance) {
-                    GalleryStorage.ensureOriginalBackup(context, saved)
-                    enqueueEnhancement(context, saved, selectedPrompt)
-                    Toast.makeText(context, "Original saved · added to enhancement queue", Toast.LENGTH_SHORT).show()
-                } else {
-                    Toast.makeText(context, "Original photo saved", Toast.LENGTH_SHORT).show()
+                val saved = withContext(Dispatchers.IO) {
+                    framed = cropPhotoForAspect(source, selectedAspect, context.cacheDir)
+                    GalleryStorage.save(context, framed ?: source, "original")
                 }
-                source.delete()
-                pendingPhoto = null
+                if (enhance) {
+                    withContext(Dispatchers.IO) { GalleryStorage.ensureOriginalBackup(context, saved) }
+                    enqueueEnhancement(context, saved, promptForPhoto)
+                }
+                enqueueGallerySync(context)
+                Toast.makeText(
+                    context,
+                    if (enhance) "Saved · enhancing in background" else "Photo saved",
+                    Toast.LENGTH_SHORT
+                ).show()
                 if (page == MainPage.GALLERY) {
                     galleryFiles = withContext(Dispatchers.IO) { GalleryStorage.list(context) }
                 }
             } catch (e: Exception) {
                 message = e.message ?: "Unable to save photo"
+                if (source.exists()) pendingPhoto = source
             } finally {
+                if (framed != null && framed != source) framed?.delete()
+                source.delete()
                 savingPhoto = false
             }
         }
@@ -1390,12 +1444,18 @@ fun MainScreen() {
         scope.launch {
             try {
                 Api.disconnect()
-                accountName = ""
-                accountCode = ""
+                // Assign a fresh USER<N> profile and code immediately after logout.
+                Api.createOrRestoreProfile(newAccount = true)
+                accountName = Api.user
+                accountCode = Api.accountCode
+                adminUnlocked = false
                 accountSwitchReady = true
-                message = "Logged out. Enter the other account's 4-digit code."
-            } catch (e: Exception) { accountError = e.message ?: "Could not log out" }
-            finally { accountBusy = false }
+                enqueueGallerySync(context)
+                message = "New account ready. Enter another account's code or keep this one."
+            } catch (e: Exception) {
+                accountError = e.message ?: "Could not create a new account"
+                accountSwitchReady = false
+            } finally { accountBusy = false }
         }
     }
 
@@ -1406,14 +1466,68 @@ fun MainScreen() {
         scope.launch {
             try {
                 Api.loginWithCode(code)
+                adminUnlocked = false
                 accountName = Api.user
                 accountCode = Api.accountCode
                 accountSwitchReady = false
+                enqueueGallerySync(context)
                 runCatching { Api.syncGallery(context) }
                 galleryFiles = withContext(Dispatchers.IO) { GalleryStorage.list(context) }
                 message = "Account connected. Cloud gallery synced."
             } catch (e: Exception) { accountError = e.message ?: "Unable to log in with that code" }
             finally { accountBusy = false }
+        }
+    }
+
+    fun loginAdmin(code: String) {
+        if (accountBusy) return
+        accountBusy = true
+        adminCodeError = ""
+        scope.launch {
+            try {
+                Api.unlockAdmin(code)
+                adminUnlocked = true
+                accountName = Api.user
+                accountCode = ""
+                adminPrompts = Api.promptsFull()
+                prompts = Api.prompts()
+                selectedPrompt = prompts.firstOrNull()?.first ?: selectedPrompt
+                message = "Admin account connected"
+            } catch (e: Exception) {
+                adminCodeError = e.message ?: "Admin login failed"
+            } finally { accountBusy = false }
+        }
+    }
+
+    fun saveAdminPrompt(id: Int?, name: String, text: String) {
+        if (!adminUnlocked || accountBusy) return
+        accountBusy = true
+        adminCodeError = ""
+        scope.launch {
+            try {
+                Api.savePrompt(id, name, text)
+                adminPrompts = Api.promptsFull()
+                prompts = Api.prompts()
+                Toast.makeText(context, "Prompt saved", Toast.LENGTH_SHORT).show()
+            } catch (e: Exception) {
+                adminCodeError = e.message ?: "Could not save prompt"
+            } finally { accountBusy = false }
+        }
+    }
+
+    fun removeAdminPrompt(id: Int) {
+        if (!adminUnlocked || accountBusy) return
+        accountBusy = true
+        adminCodeError = ""
+        scope.launch {
+            try {
+                Api.deletePrompt(id)
+                adminPrompts = Api.promptsFull()
+                prompts = Api.prompts()
+                Toast.makeText(context, "Prompt deleted", Toast.LENGTH_SHORT).show()
+            } catch (e: Exception) {
+                adminCodeError = e.message ?: "Could not delete prompt"
+            } finally { accountBusy = false }
         }
     }
 
