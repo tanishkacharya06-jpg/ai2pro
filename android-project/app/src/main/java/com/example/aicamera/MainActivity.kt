@@ -786,6 +786,25 @@ private fun CapturePreviewDialog(
 }
 
 @Composable
+private fun GalleryShortcut(file: File?, onClick: () -> Unit) {
+    val bitmap = if (file != null) rememberPhotoBitmap(file, 8) else null
+    Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(3.dp)) {
+        Box(
+            Modifier.size(56.dp).border(1.5.dp, Color.White.copy(alpha = 0.8f), CircleShape)
+                .background(Color(0xFF20242D), CircleShape).clickable(onClick = onClick),
+            contentAlignment = Alignment.Center
+        ) {
+            if (bitmap != null) {
+                Image(bitmap.asImageBitmap(), "Open gallery", Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
+            } else {
+                Text("▧", color = Color.White, style = MaterialTheme.typography.headlineMedium)
+            }
+        }
+        Text("Gallery", color = Color.White, style = MaterialTheme.typography.labelSmall)
+    }
+}
+
+@Composable
 private fun GalleryScreen(
     files: List<File>,
     pendingNames: Set<String>,
@@ -1665,9 +1684,7 @@ fun MainScreen() {
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.SpaceBetween
                     ) {
-                        TextButton(onClick = { page = MainPage.GALLERY }) {
-                            Text("▣", color = Color.White, style = MaterialTheme.typography.headlineMedium)
-                        }
+                        GalleryShortcut(galleryFiles.firstOrNull()) { page = MainPage.GALLERY }
                         Box(
                             Modifier.size(76.dp).border(4.dp, Color.White, CircleShape).padding(6.dp)
                                 .background(if (captureRunning) Color.LightGray else Color.White, CircleShape)
