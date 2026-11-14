@@ -1,54 +1,70 @@
-AI CAMERA BACKEND v1.9 - HOSTING GUIDE
+AI CAMERA BACKEND v2.0 — WINDOWS HOSTING
 
-WHAT THIS SERVER DOES
-- Provides the image-enhancement API used by the Android camera app.
-- Creates an anonymous per-installation device profile. The app can open straight to
-  the camera; a website sign-in or four-digit website code is NOT required to launch it.
-- Provides /health for the app's Online / Offline indicator in Settings.
-- Keeps enhancement jobs, account/device records, and prompt configuration in SQLite.
-- The website UI is available at / if you also want it; it is optional for camera launch.
+IMPORTANT
+- The intended image enhancement engine is the existing ChatGPT website/Playwright integration.
+- No OpenAI API key is required for ENGINE=chatgpt.
+- The server uses the existing Cloudflare tunnel + ntfy discovery topic expected by the Android APK:
+  aicam-dc66661a0788dd75
+- Do not change server/tunnel.py, PAIR_CODE, or DEFAULT_LINK unless you also intentionally change the APK.
 
-RECOMMENDED HOSTING (Docker)
-1. Upload this entire backend folder to your Docker-capable host.
-2. Build the Dockerfile in this folder.
-3. Set these environment variables:
-   DATA_DIR=/data
-   ENGINE=openai
-   OPENAI_API_KEY=<your OpenAI API key>
-   PORT=8000 (or let the host provide PORT)
-4. Attach persistent storage at /data. This is important: without a persistent volume,
-   SQLite user/device data and job files may be lost when the container is replaced.
-5. Deploy and open https://YOUR-HOST/health. A healthy server returns JSON with
-   status "online", version and engine.
-6. In the Android app, open Settings and tap Refresh beside Server status.
+WINDOWS QUICK START
+1. Install Python 3.10+ and make sure "Add Python to PATH" is enabled.
+2. Extract this server folder to a permanent location.
+3. Double-click startup.bat.
+4. On first run it creates .venv, installs requirements, installs Playwright Chromium,
+   and downloads cloudflared.exe if it is missing.
+5. A browser opens on the host computer. Sign in to ChatGPT in that browser.
+6. Leave the backend window running. The Android app opens straight to its camera and
+   automatically discovers the public server URL via the existing ntfy topic.
 
-LOCAL RUN (Python)
-   cd server
-   pip install -r requirements.txt
-   set DATA_DIR=./data
-   set ENGINE=openai
-   set OPENAI_API_KEY=<your OpenAI API key>
-   python -m uvicorn server:app --host 0.0.0.0 --port 8000
+ACCOUNT SYSTEM
+- First successful app connection creates a USER<N> account and random 4-digit account code.
+- Settings > My Account > Show Code displays that account's code.
+- Login Another Account asks the user to confirm that the current code was saved, logs out,
+  creates a fresh new USER<N> account/code, then opens a field to enter another account's code.
+- The code-only login is protected by server-side rate limiting. Treat the code as a secret.
+- Admin tools unlock using code 0007 by default (override with ADMIN_CODE environment variable).
+- Existing website username/password login remains available and unchanged.
+
+CLOUD GALLERY
+- Photos are stored by account under DATA_DIR/cloud_gallery and indexed in data.db.
+- The app syncs photos in the background when a network is available. Pending uploads/deletes
+  are retried after connectivity returns.
+- Keep DATA_DIR persistent. Never delete data.db or cloud_gallery when updating the server.
+- Keep chatgpt_profile, because it stores the browser's ChatGPT login session.
+- Back up DATA_DIR and chatgpt_profile regularly.
+
+MANUAL WINDOWS START (if you do not use startup.bat)
+Open Command Prompt in this folder and run:
+  py -m venv .venv
+  .venv\Scripts\activate
+  py -m pip install -r requirements.txt
+  py -m playwright install chromium
+  set ENGINE=chatgpt
+  set HEADLESS=0
+  set TUNNEL=1
+  set PORT=8000
+  set PAIR_CODE=aicam-dc66661a0788dd75
+  py -m uvicorn server:app --host 0.0.0.0 --port 8000
+
+LINUX HOST
+Install Python 3.10+, the requirements, Playwright Chromium, and the matching cloudflared
+binary. Then run:
+  export ENGINE=chatgpt HEADLESS=0 TUNNEL=1 PORT=8000
+  export PAIR_CODE=aicam-dc66661a0788dd75
+  python3 -m uvicorn server:app --host 0.0.0.0 --port 8000
+
+CHECK SERVER
+The local health endpoint is http://127.0.0.1:8000/health.
+The public Cloudflare tunnel URL is published automatically to the unchanged ntfy topic.
+Settings in the app shows the server's Online/Offline state.
 
 ENGINE OPTIONS
-- openai: real image editing; requires OPENAI_API_KEY and API access.
-- echo: test mode only; sends the source image back unchanged and is NOT real enhancement.
-- chatgpt: runs the Playwright browser flow on a computer you control. It is not
-  recommended for container/cloud hosting.
+- chatgpt: uses the signed-in ChatGPT website through the existing Playwright browser session.
+- echo: connectivity/test mode only; returns the original photo unchanged.
+- openai: optional separate integration requiring an API key. It is not the default.
 
-DOCKER COMPOSE
-From this folder, copy .env.example to .env, fill in OPENAI_API_KEY, then run:
-   docker compose up -d --build
-Compose stores the SQLite database and job files in the named volume mounted at /data.
-
-ANDROID APP BEHAVIOUR
-- The app opens directly to the camera. Website login/pairing is not needed just to open it.
-- When a server can be discovered, the app automatically creates/restores its guest
-  device profile, fetches enhancement presets, and shows Online · v1.9 in Settings.
-- If the server is offline, local camera capture and local gallery remain available;
-  enhancement will require the server to return online.
-- The website UI remains available as an optional separate interface.
-
-BACKUP
-Back up the persistent /data volume regularly. It contains data.db and jobs/.
-Do not publish your .env file or share your API key.
+SECURITY
+- Do not share chatgpt_profile or your account code.
+- The 4-digit code is short and has limited entropy; keep the server's login rate limit enabled.
+- Protect your Windows host and do not expose the local port directly to the internet.
