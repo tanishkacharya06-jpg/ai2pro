@@ -320,8 +320,23 @@ object Api {
         http.newCall(rq("/api/gallery/upload").post(body).build()).execute().use { check(it) }
     }
 
+    fun queueCloudDelete(name: String) {
+        val pending = prefs.getStringSet("pending_cloud_deletes", emptySet()).orEmpty().toMutableSet()
+        pending.add(name)
+        prefs.edit().putStringSet("pending_cloud_deletes", pending).apply()
+    }
+
     suspend fun syncGallery(context: Context): Int = withContext(Dispatchers.IO) {
         if (sid.isBlank() || user.isBlank()) return@withContext 0
+        val pendingDeletes = prefs.getStringSet("pending_cloud_deletes", emptySet()).orEmpty().toList()
+        for (photoName in pendingDeletes) {
+            try {
+                deleteCloudPhoto(photoName)
+                val updated = prefs.getStringSet("pending_cloud_deletes", emptySet()).orEmpty().toMutableSet()
+                updated.remove(photoName)
+                prefs.edit().putStringSet("pending_cloud_deletes", updated).apply()
+            } catch (_: Exception) { }
+        }
         val index = http.newCall(rq("/api/gallery").get().build()).execute().use { r ->
             check(r)
             JSONArray(r.body!!.string())
