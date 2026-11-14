@@ -1,0 +1,46 @@
+AI CAMERA BACKEND v2.1 - WINDOWS HOSTING
+=========================================
+
+QUICK START
+1. Install Python 3.11+ for Windows from https://www.python.org/downloads/windows/
+   Enable "Add Python to PATH" if offered.
+2. Extract this ZIP into a normal writable folder, for example C:\AICameraBackend.
+3. Double-click startup.bat.
+4. The first run installs Python packages, Playwright Chromium, and cloudflared.
+5. The server starts and opens a Chromium window for the ChatGPT website engine.
+6. Sign in to your ChatGPT website account in that browser window. Do not close the
+   backend terminal while using the phone app.
+
+IMPORTANT SETTINGS
+- The app discovers the server using the fixed ntfy topic:
+  aicam-dc66661a0788dd75
+  startup.bat sets PAIR_CODE to this value. Do not change it unless the Android
+  app's DEFAULT_LINK is changed to the same value.
+- No OpenAI API key is required. ENGINE=chatgpt uses the ChatGPT website through
+  Playwright and its persistent browser profile.
+- The browser profile is stored in server/chatgpt_profile.
+- Persistent server data is stored in data/ (including data.db and cloud_gallery).
+  Keep the data folder when updating the backend. Do not delete it if you want
+  to preserve account codes and cloud-gallery photos.
+- Keep cloudflared.exe, startup.bat, the server folder, and data folder together.
+- Windows must remain awake and connected to the internet while the phone uses
+  this hosted backend.
+- This uses a Cloudflare Quick Tunnel URL, which can change after a restart;
+  the app's ntfy discovery mechanism receives the new URL automatically.
+
+TROUBLESHOOTING
+- If Python is not found, install Python 3.11+ and reopen Windows.
+- If the first install is interrupted, run startup.bat again.
+- If Windows Firewall asks, allow Python on the network you trust.
+- If port 8000 is already occupied, close the other server or change PORT and
+  the uvicorn port together in startup.bat.
+- If the ChatGPT browser does not open, check that the computer has a desktop
+  session and that Playwright Chromium installed successfully.
+
+SECURITY
+- Keep this folder private. It contains the persistent browser login profile,
+  app account database, and private gallery data.
+- Do not upload data/, chatgpt_profile/, cloudflared.exe, or .venv/ when sharing
+  your source code.
+- The web admin's initial credentials are documented by the server's existing
+  setup behavior. Change default credentials immediately after first login.
