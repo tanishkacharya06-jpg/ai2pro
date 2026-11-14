@@ -91,6 +91,35 @@ object GalleryStorage {
     fun hasOriginalBackup(context: Context, primary: File): Boolean =
         File(backupDirectory(context), primary.name).isFile
 
+    private fun pendingEnhancementDirectory(context: Context): File =
+        File(File(context.filesDir, "pending_enhancements"), accountKey()).apply {
+            if (!exists() && !mkdirs()) throw IOException("Unable to create the enhancement review folder")
+        }
+
+    /** Persist a completed result privately until the user chooses which version to keep. */
+    @Synchronized
+    fun storePendingEnhancement(context: Context, primary: File, enhanced: File): File {
+        if (!primary.isFile || !enhanced.isFile) throw IOException("The original or enhanced photo is missing")
+        val target = File(pendingEnhancementDirectory(context), primary.name + ".png")
+        copyAtomically(enhanced, target)
+        return target
+    }
+
+    @Synchronized
+    fun applyPendingEnhancement(context: Context, primary: File, pending: File, keepOriginal: Boolean) {
+        if (!primary.isFile || !pending.isFile) throw IOException("The enhanced preview is no longer available")
+        if (keepOriginal) ensureOriginalBackup(context, primary)
+        copyImageAtomically(pending, primary)
+        if (!keepOriginal) File(backupDirectory(context), primary.name).delete()
+        pending.delete()
+        publishToMediaStore(context, primary)
+    }
+
+    @Synchronized
+    fun discardPendingEnhancement(pending: File) {
+        pending.delete()
+    }
+
     /** Replace the visible gallery item in-place. Its first original remains hidden for Revert. */
     @Synchronized
     fun replacePrimary(context: Context, primary: File, replacement: File) {
