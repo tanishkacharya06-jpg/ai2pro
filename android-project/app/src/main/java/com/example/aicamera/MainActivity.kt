@@ -956,7 +956,8 @@ private fun PhotoViewer(
                             scaleY = scale
                             translationX = offset.x
                             translationY = offset.y
-                        },
+                        }
+                        .blur(if (isPending) 14.dp else 0.dp),
                     contentScale = ContentScale.Fit
                 )
             } else {
