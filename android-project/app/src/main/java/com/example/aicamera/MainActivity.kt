@@ -1553,19 +1553,13 @@ fun MainScreen() {
                     file = file,
                     onBack = { editingPhoto = null; page = MainPage.GALLERY },
                     onSave = { edited ->
-                        scope.launch {
-                            try {
-                                withContext(Dispatchers.IO) { GalleryStorage.replacePrimary(context, file, edited) }
-                                edited.delete()
-                                enqueueGallerySync(context)
-                                galleryFiles = withContext(Dispatchers.IO) { GalleryStorage.list(context) }
-                                editingPhoto = null
-                                page = MainPage.GALLERY
-                                Toast.makeText(context, "Edits saved", Toast.LENGTH_SHORT).show()
-                            } catch (e: Exception) {
-                                message = e.message ?: "Unable to save edits"
-                            }
-                        }
+                        withContext(Dispatchers.IO) { GalleryStorage.replacePrimary(context, file, edited) }
+                        edited.delete()
+                        enqueueGallerySync(context)
+                        galleryFiles = withContext(Dispatchers.IO) { GalleryStorage.list(context) }
+                        editingPhoto = null
+                        page = MainPage.GALLERY
+                        Toast.makeText(context, "Edits saved", Toast.LENGTH_SHORT).show()
                     }
                 )
             }
