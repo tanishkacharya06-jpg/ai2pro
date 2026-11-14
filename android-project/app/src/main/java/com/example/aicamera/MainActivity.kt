@@ -635,11 +635,13 @@ private fun CameraPreview(
                 val preview = Preview.Builder().build().also { it.setSurfaceProvider(view.surfaceProvider) }
                 val camera = cameraProvider.bindToLifecycle(context as LifecycleOwner, selected, preview, capture)
                 boundCamera = camera
-                val maxZoom = camera.cameraInfo.zoomState.value?.maxZoomRatio ?: 1f
-                onCameraReady(camera, maxZoom.coerceAtLeast(1f))
+                val zoomState = camera.cameraInfo.zoomState.value
+                val minZoom = zoomState?.minZoomRatio ?: 1f
+                val maxZoom = zoomState?.maxZoomRatio ?: 1f
+                onCameraReady(camera, minZoom.coerceAtMost(1f), maxZoom.coerceAtLeast(1f))
             }
         } catch (e: Exception) {
-            onCameraReady(null, 1f)
+            onCameraReady(null, 1f, 1f)
             onError(e.message ?: "Unable to start camera preview")
         }
     }
@@ -648,7 +650,7 @@ private fun CameraPreview(
         onDispose {
             provider?.unbindAll()
             boundCamera = null
-            onCameraReady(null, 1f)
+            onCameraReady(null, 1f, 1f)
         }
     }
 }
