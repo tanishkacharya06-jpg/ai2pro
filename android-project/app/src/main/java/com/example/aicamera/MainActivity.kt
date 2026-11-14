@@ -1145,8 +1145,9 @@ fun MainScreen() {
                     CameraPreview(
                         capture = capture,
                         frontFacing = cameraFront,
-                        onCameraReady = { camera, max ->
+                        onCameraReady = { camera, min, max ->
                             activeCamera = camera
+                            minZoomRatio = min
                             maxZoomRatio = max
                             if (camera == null) zoomRatio = 1f
                         },
