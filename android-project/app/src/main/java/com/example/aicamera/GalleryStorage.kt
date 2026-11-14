@@ -5,6 +5,7 @@ import android.graphics.BitmapFactory
 import android.content.ContentUris
 import android.content.ContentValues
 import android.content.Context
+import android.net.Uri
 import android.provider.MediaStore
 import java.io.File
 import java.io.FileOutputStream
@@ -91,6 +92,13 @@ object GalleryStorage {
     fun hasOriginalBackup(context: Context, primary: File): Boolean =
         File(backupDirectory(context), primary.name).isFile
 
+    fun markEnhanced(context: Context, primary: File) {
+        File(backupDirectory(context), ".enhanced_${primary.name}").writeText("1")
+    }
+
+    fun isEnhanced(context: Context, primary: File): Boolean =
+        File(backupDirectory(context), ".enhanced_${primary.name}").isFile
+
     /** Replace the visible gallery item in-place. Its first original remains hidden for Revert. */
     @Synchronized
     fun replacePrimary(context: Context, primary: File, replacement: File) {
@@ -105,6 +113,7 @@ object GalleryStorage {
         val backup = File(backupDirectory(context), primary.name)
         if (!backup.isFile) throw IOException("No saved original is available for this photo")
         copyAtomically(backup, primary)
+        File(backupDirectory(context), ".enhanced_${primary.name}").delete()
         publishToMediaStore(context, primary)
     }
 
@@ -204,6 +213,58 @@ object GalleryStorage {
     }
 
     /** Writes a shareable/export copy to Downloads without requiring broad storage access. */
+    fun exportToDownloads(context: Context, source: File): Uri {
+        if (!source.isFile) throw IOException("Photo is missing")
+        val resolver = context.contentResolver
+        val values = ContentValues().apply {
+            put(MediaStore.Downloads.DISPLAY_NAME, source.name)
+            put(MediaStore.Downloads.MIME_TYPE, mimeFor(source))
+            put(MediaStore.Downloads.RELATIVE_PATH, "Download/AI Camera")
+            put(MediaStore.Downloads.IS_PENDING, 1)
+        }
+        val uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
+            ?: throw IOException("Unable to create a Downloads file")
+        try {
+            resolver.openOutputStream(uri)?.use { output ->
+                source.inputStream().use { input -> input.copyTo(output) }
+            } ?: throw IOException("Unable to write the exported photo")
+            resolver.update(uri, ContentValues().apply {
+                put(MediaStore.Downloads.IS_PENDING, 0)
+            }, null, null)
+            return uri
+        } catch (e: Exception) {
+            resolver.delete(uri, null, null)
+            if (e is IOException) throw e
+            throw IOException("Export failed", e)
+        }
+    }
+
+    @Synchronized
+    fun deletePhoto(context: Context, file: File) {
+        val root = directory(context).canonicalFile
+        val target = file.canonicalFile
+        if (target.parentFile != root || !target.isFile) throw IOException("Photo is not in the active account gallery")
+        val resolver = context.contentResolver
+        try {
+            resolver.query(
+                MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
+                arrayOf(MediaStore.Images.Media._ID),
+                "${MediaStore.Images.Media.DISPLAY_NAME}=? AND ${MediaStore.Images.Media.RELATIVE_PATH}=?",
+                arrayOf(target.name, accountMediaPath()),
+                null
+            )?.use { cursor ->
+                while (cursor.moveToNext()) {
+                    val uri = ContentUris.withAppendedId(MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
+                        cursor.getLong(cursor.getColumnIndexOrThrow(MediaStore.Images.Media._ID)))
+                    resolver.delete(uri, null, null)
+                }
+            }
+        } catch (_: Exception) { }
+        target.delete()
+        File(backupDirectory(context), target.name).delete()
+        File(backupDirectory(context), ".enhanced_${target.name}").delete()
+    }
+
     fun exportToDownloads(context: Context, source: File): Uri {
         if (!source.isFile) throw IOException("Photo is missing")
         val resolver = context.contentResolver
