@@ -2,10 +2,15 @@ package com.example.aicamera
 
 import android.Manifest
 import android.content.Context
+import android.content.Intent
 import android.content.SharedPreferences
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.ColorMatrix
+import android.graphics.ColorMatrixColorFilter
+import android.graphics.Paint
+import android.graphics.Canvas as AndroidCanvas
 import android.graphics.Matrix
 import android.net.Uri
 import android.os.Bundle
@@ -26,6 +31,8 @@ import androidx.camera.core.Preview
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
 import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
@@ -50,6 +57,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
@@ -96,6 +104,8 @@ import java.util.UUID
 import java.util.concurrent.TimeUnit
 import kotlin.math.roundToInt
 import kotlin.math.abs
+
+data class PromptEntry(val id: Int, val name: String, val text: String)
 
 const val DEFAULT_LINK = "aicam-dc66661a0788dd75"   // must equal PAIR_CODE in the server's startup.bat
 
@@ -193,6 +203,9 @@ object Api {
     var accountCode: String
         get() = readSecret("account_code")
         set(v) = writeSecret("account_code", v)
+    var isAdmin: Boolean
+        get() = prefs.getBoolean("is_admin", false)
+        set(v) { prefs.edit().putBoolean("is_admin", v).apply() }
     var pid: Int
         get() = prefs.getInt("pid", 0)
         set(v) { prefs.edit().putInt("pid", v).apply() }
@@ -267,6 +280,7 @@ object Api {
             user = json.getString("name")
             val code = json.optString("code")
             if (code.length == 4) accountCode = code
+            isAdmin = json.optBoolean("admin", false)
             user
         }
     }
@@ -284,6 +298,7 @@ object Api {
             deviceId = json.optString("device_id")
             user = json.getString("name")
             accountCode = clean
+            isAdmin = json.optBoolean("admin", false)
             user
         }
     }
@@ -391,6 +406,7 @@ object Api {
             val json = JSONObject(r.body!!.string())
             user = json.getString("name")
             deviceId = json.optString("device_id")
+            isAdmin = json.optBoolean("admin", false)
             user
         }
     }
@@ -409,6 +425,7 @@ object Api {
         deviceId = ""
         user = ""
         accountCode = ""
+        isAdmin = false
     }
 
     suspend fun prompts(): List<Pair<Int, String>> = withContext(Dispatchers.IO) {
@@ -419,6 +436,35 @@ object Api {
             val a = JSONArray(it.body!!.string())
             (0 until a.length()).map { i -> a.getJSONObject(i).let { o -> o.getInt("id") to o.getString("name") } }
         }
+    }
+
+    suspend fun promptEntries(): List<PromptEntry> = withContext(Dispatchers.IO) {
+        val r = http.newCall(rq("/api/prompts").build()).execute()
+        r.use {
+            check(it)
+            val a = JSONArray(it.body!!.string())
+            (0 until a.length()).map { i ->
+                a.getJSONObject(i).let { o -> PromptEntry(o.getInt("id"), o.getString("name"), o.getString("text")) }
+            }
+        }
+    }
+
+    suspend fun savePrompt(id: Int?, name: String, text: String) = withContext(Dispatchers.IO) {
+        if (!isAdmin) throw IOException("Admin access is required")
+        val body = JSONObject().put("name", name).put("text", text)
+            .toString().toRequestBody("application/json".toMediaType())
+        val builder = if (id == null) rq("/api/prompts").post(body) else rq("/api/prompts/$id").put(body)
+        http.newCall(builder.build()).execute().use { check(it) }
+    }
+
+    suspend fun deletePrompt(id: Int) = withContext(Dispatchers.IO) {
+        if (!isAdmin) throw IOException("Admin access is required")
+        http.newCall(rq("/api/prompts/$id").delete().build()).execute().use { check(it) }
+    }
+
+    suspend fun deleteCloudPhoto(name: String) = withContext(Dispatchers.IO) {
+        if (sid.isBlank()) return@withContext
+        http.newCall(rq("/api/gallery/" + Uri.encode(name)).delete().build()).execute().use { check(it) }
     }
 
     private fun send(body: MultipartBody): String =
