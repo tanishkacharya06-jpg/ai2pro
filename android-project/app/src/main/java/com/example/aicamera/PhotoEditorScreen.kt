@@ -58,7 +58,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 fun PhotoEditorScreen(
     file: File,
     onBack: () -> Unit,
-    onSave: (File) -> Unit
+    onSave: suspend (File) -> Unit
 ) {
     var bitmap by remember(file) { mutableStateOf<Bitmap?>(null) }
     var rotation by remember(file) { mutableIntStateOf(0) }
