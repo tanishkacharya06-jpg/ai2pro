@@ -92,6 +92,26 @@ object GalleryStorage {
     fun hasOriginalBackup(context: Context, primary: File): Boolean =
         File(backupDirectory(context), primary.name).isFile
 
+    private fun imageStatePrefs(context: Context) =
+        context.getSharedPreferences("gallery_image_state", Context.MODE_PRIVATE)
+
+    private fun imageStateKey(file: File): String = "${accountKey()}:${file.name}"
+
+    fun isEnhanced(context: Context, file: File): Boolean =
+        imageStatePrefs(context).getStringSet("enhanced", emptySet()).orEmpty().contains(imageStateKey(file))
+
+    fun markEnhanced(context: Context, file: File) {
+        val set = imageStatePrefs(context).getStringSet("enhanced", emptySet()).orEmpty().toMutableSet()
+        set.add(imageStateKey(file))
+        imageStatePrefs(context).edit().putStringSet("enhanced", set).apply()
+    }
+
+    private fun clearEnhanced(context: Context, file: File) {
+        val set = imageStatePrefs(context).getStringSet("enhanced", emptySet()).orEmpty().toMutableSet()
+        set.remove(imageStateKey(file))
+        imageStatePrefs(context).edit().putStringSet("enhanced", set).apply()
+    }
+
     /** Replace the visible gallery item in-place. Its first original remains hidden for Revert. */
     @Synchronized
     fun replacePrimary(context: Context, primary: File, replacement: File) {
@@ -109,6 +129,7 @@ object GalleryStorage {
         publishToMediaStore(context, primary)
         // Revert consumes the enhanced-state backup; the original can be enhanced again later.
         backup.delete()
+        clearEnhanced(context, primary)
     }
 
     /** Enhancement results are PNG; convert to the primary file's extension before replacing. */
