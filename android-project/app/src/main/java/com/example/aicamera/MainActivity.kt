@@ -768,6 +768,7 @@ private fun PhotoViewer(
     val canRevert = remember(current) { GalleryStorage.hasOriginalBackup(context, current) }
     var scale by remember(current) { mutableFloatStateOf(1f) }
     var offset by remember(current) { mutableStateOf(Offset.Zero) }
+    var confirmRevert by remember(current) { mutableStateOf(false) }
 
     Dialog(onDismissRequest = onClose, properties = DialogProperties(usePlatformDefaultWidth = false)) {
         Box(Modifier.fillMaxSize().background(Color.Black)) {
@@ -813,7 +814,7 @@ private fun PhotoViewer(
             Column(Modifier.align(Alignment.BottomCenter).fillMaxWidth().padding(12.dp)) {
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center) {
                     TextButton(onClick = { onEnhance(current); onClose() }) { Text("Enhance", color = Color.White) }
-                    if (canRevert) TextButton(onClick = { onRevert(current); onClose() }) {
+                    if (canRevert) TextButton(onClick = { confirmRevert = true }) {
                         Text("Revert original", color = Color.White)
                     }
                 }
@@ -825,6 +826,17 @@ private fun PhotoViewer(
                 }
             }
         }
+    }
+    if (confirmRevert) {
+        AlertDialog(
+            onDismissRequest = { confirmRevert = false },
+            title = { Text("Restore original photo?") },
+            text = { Text("The current visible version will be replaced by the saved original. This cannot be undone from this screen.") },
+            confirmButton = {
+                TextButton(onClick = { confirmRevert = false; onRevert(current); onClose() }) { Text("Restore original") }
+            },
+            dismissButton = { TextButton(onClick = { confirmRevert = false }) { Text("Cancel") } }
+        )
     }
 }
 
