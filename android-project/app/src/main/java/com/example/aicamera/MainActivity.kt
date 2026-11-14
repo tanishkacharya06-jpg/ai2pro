@@ -823,15 +823,28 @@ private fun GalleryScreen(
                         color = Color(0xFF17191F)
                     ) {
                         Box {
-                            if (bitmap != null) {
-                                Image(
-                                    bitmap.asImageBitmap(), null,
-                                    Modifier.fillMaxSize().blur(blur),
-                                    contentScale = ContentScale.Crop
-                                )
-                            } else {
-                                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                                    CircularProgressIndicator()
+                            AnimatedContent(
+                                targetState = pending,
+                                transitionSpec = {
+                                    if (!targetState && revealAnimation) {
+                                        slideInHorizontally(initialOffsetX = { it / 2 }, animationSpec = tween(650)) +
+                                            fadeIn(tween(650)) togetherWith fadeOut(tween(180))
+                                    } else {
+                                        fadeIn(tween(160)) togetherWith fadeOut(tween(120))
+                                    }
+                                },
+                                label = "enhanced-photo-slide"
+                            ) { processing ->
+                                if (bitmap != null) {
+                                    Image(
+                                        bitmap.asImageBitmap(), null,
+                                        Modifier.fillMaxSize().blur(if (processing) blur.coerceAtLeast(12.dp) else 0.dp),
+                                        contentScale = ContentScale.Crop
+                                    )
+                                } else {
+                                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                                        CircularProgressIndicator()
+                                    }
                                 }
                             }
                             if (pending) {
