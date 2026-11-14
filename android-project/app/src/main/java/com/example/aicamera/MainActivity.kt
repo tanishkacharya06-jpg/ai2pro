@@ -305,7 +305,7 @@ object Api {
         http.newCall(rq("/api/gallery/upload").post(body).build()).execute().use { check(it) }
     }
 
-    suspend fun syncGallery(context: Context): Int = withContext(Dispatchers.IO) {
+    suspend fun syncGallery(context: Context, onProgress: suspend (Int, Int) -> Unit = { _, _ -> }): Int = withContext(Dispatchers.IO) {
         if (sid.isBlank() || user.isBlank()) return@withContext 0
         val index = http.newCall(rq("/api/gallery").get().build()).execute().use { r ->
             check(r)
@@ -318,12 +318,17 @@ object Api {
         }
         val localFiles = GalleryStorage.list(context)
         var changed = 0
+        val total = (localFiles.size + index.length()).coerceAtLeast(1)
+        var completed = 0
+        onProgress(0, total)
         for (file in localFiles) {
             val cloudModified = remote[file.name]
             if (cloudModified == null || file.lastModified() > cloudModified + 1000L) {
                 uploadLocalPhoto(file)
                 changed++
             }
+            completed++
+            onProgress(completed, total)
         }
         for (i in 0 until index.length()) {
             val item = index.getJSONObject(i)
@@ -342,6 +347,8 @@ object Api {
                     changed++
                 } finally { temp.delete() }
             }
+            completed++
+            onProgress(completed, total)
         }
         changed
     }
@@ -824,7 +831,7 @@ private fun PhotoViewer(
 @Composable
 private fun EnhancementQueueScreen(
     items: List<WorkInfo>, onBack: () -> Unit, onRetry: (WorkInfo) -> Unit,
-    onCancel: (WorkInfo) -> Unit, onClearHistory: () -> Unit,
+    onCancel: (WorkInfo) -> Unit, onClearHistory: (List<WorkInfo>) -> Unit,
     onKeepOriginal: (WorkInfo) -> Unit, onKeepEnhanced: (WorkInfo) -> Unit,
     onKeepBoth: (WorkInfo) -> Unit
 ) {
@@ -842,7 +849,7 @@ private fun EnhancementQueueScreen(
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 Text("History (${history.size})", color = Color.White, style = MaterialTheme.typography.titleMedium)
                 Spacer(Modifier.weight(1f))
-                TextButton(onClick = onClearHistory) { Text("Clear History") }
+                TextButton(onClick = { onClearHistory(history) }) { Text("Clear History") }
             }
         }
         if (items.isEmpty()) {
@@ -950,6 +957,7 @@ fun MainScreen() {
     var accountBusy by remember { mutableStateOf(false) }
     var accountError by remember { mutableStateOf("") }
     var accountSwitchReady by remember { mutableStateOf(false) }
+    var backupProgress by remember { mutableStateOf("") }
 
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
         if (uri != null) {
@@ -1147,7 +1155,11 @@ fun MainScreen() {
                 accountName = Api.user
                 accountCode = Api.accountCode
                 accountSwitchReady = false
-                runCatching { Api.syncGallery(context) }
+                backupProgress = "Backing up this account's gallery…"
+                runCatching {
+                    Api.syncGallery(context) { done, total -> backupProgress = "Backing up photos · $done/$total" }
+                }
+                backupProgress = ""
                 galleryFiles = withContext(Dispatchers.IO) { GalleryStorage.list(context) }
                 message = "Account connected. Cloud gallery synced."
             } catch (e: Exception) { accountError = e.message ?: "Unable to log in with that code" }
@@ -1183,6 +1195,8 @@ fun MainScreen() {
 
                 Row(Modifier.fillMaxWidth().align(Alignment.TopCenter).padding(10.dp), verticalAlignment = Alignment.CenterVertically) {
                     TextButton(onClick = { settingsOpen = true }) { Text("⚙ Settings", color = Color.White) }
+                    Spacer(Modifier.width(4.dp))
+                    Text("Normal Photo", color = Color.White, style = MaterialTheme.typography.labelMedium)
                     Spacer(Modifier.width(4.dp))
                     Box {
                         TextButton(onClick = { focusMenuOpen = true }) { Text("Focus: $focusMode", color = Color.White) }
@@ -1221,7 +1235,10 @@ fun MainScreen() {
                         }
                     }
                 }
-                if (message.isNotBlank()) {
+                if (backupProgress.isNotBlank()) {
+                    Text(backupProgress, color = Color.White, modifier = Modifier.align(Alignment.TopCenter).padding(top = 62.dp)
+                        .background(Color(0xBB261B31), RoundedCornerShape(12.dp)).padding(horizontal = 14.dp, vertical = 8.dp))
+                } else if (message.isNotBlank()) {
                     Text(message, color = Color.White, modifier = Modifier.align(Alignment.TopCenter).padding(top = 62.dp)
                         .background(Color(0xBB261B31), RoundedCornerShape(12.dp)).padding(horizontal = 14.dp, vertical = 8.dp))
                 }
@@ -1329,9 +1346,12 @@ fun MainScreen() {
                     info.outputData.getString(KEY_PENDING_ENHANCED_FILE)?.takeIf { it.isNotBlank() }?.let { GalleryStorage.discardPendingEnhancement(File(it)) }
                     WorkManager.getInstance(context).cancelWorkById(info.id)
                 },
-                onClearHistory = {
+                onClearHistory = { history ->
                     WorkManager.getInstance(context).pruneWork()
-                    context.getSharedPreferences("enhancement_queue_metadata", Context.MODE_PRIVATE).edit().clear().apply()
+                    val prefs = context.getSharedPreferences("enhancement_queue_metadata", Context.MODE_PRIVATE)
+                    val edit = prefs.edit()
+                    history.forEach { edit.remove("task_" + it.id) }
+                    edit.apply()
                 },
                 onKeepOriginal = { info ->
                     info.outputData.getString(KEY_PENDING_ENHANCED_FILE)?.takeIf { it.isNotBlank() }?.let { GalleryStorage.discardPendingEnhancement(File(it)) }
