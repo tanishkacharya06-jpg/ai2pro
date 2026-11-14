@@ -320,7 +320,7 @@ object Api {
         var changed = 0
         val total = (localFiles.size + index.length()).coerceAtLeast(1)
         var completed = 0
-        onProgress(0, total)
+        withContext(Dispatchers.Main.immediate) { onProgress(0, total) }
         for (file in localFiles) {
             val cloudModified = remote[file.name]
             if (cloudModified == null || file.lastModified() > cloudModified + 1000L) {
@@ -328,7 +328,7 @@ object Api {
                 changed++
             }
             completed++
-            onProgress(completed, total)
+            withContext(Dispatchers.Main.immediate) { onProgress(completed, total) }
         }
         for (i in 0 until index.length()) {
             val item = index.getJSONObject(i)
@@ -1413,6 +1413,7 @@ fun MainScreen() {
             serverOnline = serverOnline,
             checkingServer = checkingServer,
             onRefreshServer = { refreshServer() },
+            backupProgress = backupProgress,
             timerSeconds = timerSeconds,
             gridMode = gridMode,
             onTimerChange = {
@@ -1442,6 +1443,7 @@ private fun CameraSettingsDialog(
     serverOnline: Boolean?,
     checkingServer: Boolean,
     onRefreshServer: () -> Unit,
+    backupProgress: String,
     timerSeconds: Int,
     gridMode: Int,
     onTimerChange: (Int) -> Unit,
@@ -1471,6 +1473,10 @@ private fun CameraSettingsDialog(
                     }
                 }
                 if (accountError.isNotBlank()) Text(accountError, color = Color(0xFFFFAAB6), style = MaterialTheme.typography.bodySmall)
+                if (backupProgress.isNotBlank()) {
+                    Text(backupProgress, color = Color(0xFFFFB5CE), style = MaterialTheme.typography.bodySmall)
+                    LinearProgressIndicator(Modifier.fillMaxWidth())
+                }
                 Text("Server status", style = MaterialTheme.typography.labelMedium, color = Color.Gray)
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     val statusColor = when (serverOnline) {
